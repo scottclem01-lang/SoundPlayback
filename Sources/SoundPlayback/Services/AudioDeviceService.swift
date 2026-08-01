@@ -28,6 +28,15 @@ enum AudioDeviceService {
         outputDevices().first { $0.uid == uid }
     }
 
+    static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        for deviceID in deviceList() {
+            if stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID) == uid {
+                return deviceID
+            }
+        }
+        return nil
+    }
+
     // MARK: - Core Audio helpers
 
     private static func deviceList() -> [AudioDeviceID] {

@@ -32,6 +32,6 @@ swift run SoundPlayback
 
 Or open `Package.swift` in Xcode and run the `SoundPlayback` target.
 
-## Current scaffold
+## Current status
 
-UI shell + session model + device enumeration. Still to wire: real WAV/MP3 decode + stereo split, waveform peaks, clip drag/trim/move, and Core Audio playback to the selected outs.
+Working: device picker, import WAV/MP3 (stereo → two mono tracks), waveforms, pinch-zoom, exclusive solo / mute restore, actively-scroll + page-jump follow, clip drag / trim / move across tracks, mute/solo/volume/out routing, transport + markers, session save/load.

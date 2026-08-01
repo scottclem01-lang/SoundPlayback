@@ -6,9 +6,25 @@ struct TransportBar: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Text("SoundPlayback")
+            Text(documentTitle)
                 .font(.headline)
                 .foregroundStyle(SPTheme.textPrimary)
+                .lineLimit(1)
+                .help(viewModel.documentURL?.path ?? "Unsaved session")
+
+            if viewModel.isDirty {
+                Text("•")
+                .font(.headline)
+                .foregroundStyle(SPTheme.accent)
+                .help("Unsaved changes")
+            }
+
+            if let status = viewModel.statusMessage {
+                Text(status)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SPTheme.accent)
+                    .transition(.opacity)
+            }
 
             Divider().frame(height: 18)
 
@@ -19,18 +35,44 @@ struct TransportBar: View {
                         .tag(String?.some(device.uid))
                 }
             }
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 240)
             .onTapGesture { viewModel.refreshDevices() }
+
+            Toggle("Actively scroll", isOn: $viewModel.activelyScroll)
+                .toggleStyle(.checkbox)
+                .help("Keep the playhead centered while playing. Off = page jump when it leaves the view.")
+
+            Toggle(
+                "Marks are sequential",
+                isOn: Binding(
+                    get: { viewModel.marksAreSequential },
+                    set: { viewModel.setMarksAreSequential($0) }
+                )
+            )
+            .toggleStyle(.checkbox)
+            .help("When on, marker numbers always match left-to-right order on the timeline.")
+
+            Toggle("Snap", isOn: $viewModel.snapEnabled)
+                .toggleStyle(.checkbox)
+                .help("Snap dragged/trimmed clip edges to nearby clip starts, ends, and markers.")
+
+            LevelMeterView(
+                levels: engine.meterLevels,
+                channelCount: viewModel.availableOutputCount
+            )
 
             Spacer()
 
+            Button("Undo") { viewModel.undoClipEdit() }
+                .disabled(!viewModel.canUndo)
+
             HStack(spacing: 8) {
-                Button("Stop") { engine.stop() }
+                Button("Stop") { viewModel.stop() }
                 Button(engine.transport == .playing ? "Pause" : "Play") {
                     if engine.transport == .playing {
-                        engine.pause()
+                        viewModel.pause()
                     } else {
-                        engine.play()
+                        viewModel.play()
                     }
                 }
             }
@@ -43,6 +85,10 @@ struct TransportBar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(SPTheme.panel)
+    }
+
+    private var documentTitle: String {
+        viewModel.documentDisplayName
     }
 
     private var deviceBinding: Binding<String?> {

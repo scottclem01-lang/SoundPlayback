@@ -18,12 +18,29 @@ struct SoundPlaybackApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+
+    /// Returns `true` when quit may proceed (saved / discarded / not dirty).
+    var unsavedChangesHandler: (() -> Bool)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
         bringAppToFront()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         bringAppToFront()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let unsavedChangesHandler, !unsavedChangesHandler() {
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 
     private func bringAppToFront() {

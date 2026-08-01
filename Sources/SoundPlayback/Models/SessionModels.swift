@@ -37,7 +37,7 @@ struct Track: Identifiable, Codable, Equatable {
     init(
         id: UUID = UUID(),
         name: String,
-        volume: Double = 1.0,
+        volume: Double = 0.8,
         isMuted: Bool = false,
         isSoloed: Bool = false,
         outputMask: OutputMask = .outs12,
@@ -76,7 +76,56 @@ struct OutputMask: OptionSet, Codable, Equatable, Hashable {
     }
 }
 
-/// Mono clip on the timeline. Stereo imports create two clips (L/R) on separate tracks.
+/// How a clip was synthesized (nil = imported audio). Persisted so tempo can be re-edited.
+enum GeneratedClipKind: String, Codable, Equatable {
+    case introClicks
+    case thump
+}
+
+struct ClipGeneration: Codable, Equatable {
+    var kind: GeneratedClipKind
+    var tempoBPM: Double
+    var clickCount: Int?
+    var frequencyHz: Double?
+    var thumpTenths: Int?
+    var trackLengthSeconds: Double?
+
+    static func introClicks(tempoBPM: Double, clickCount: Int) -> ClipGeneration {
+        ClipGeneration(
+            kind: .introClicks,
+            tempoBPM: tempoBPM,
+            clickCount: clickCount,
+            frequencyHz: nil,
+            thumpTenths: nil,
+            trackLengthSeconds: nil
+        )
+    }
+
+    static func thump(
+        tempoBPM: Double,
+        frequencyHz: Double,
+        thumpTenths: Int,
+        trackLengthSeconds: Double
+    ) -> ClipGeneration {
+        ClipGeneration(
+            kind: .thump,
+            tempoBPM: tempoBPM,
+            clickCount: nil,
+            frequencyHz: frequencyHz,
+            thumpTenths: thumpTenths,
+            trackLengthSeconds: trackLengthSeconds
+        )
+    }
+
+    var displayName: String {
+        switch kind {
+        case .introClicks: return "Intro Clicks"
+        case .thump: return "Thump"
+        }
+    }
+}
+
+/// Mono clip on the timeline. Stereo imports create two paired clips (L/R) on adjacent tracks.
 struct AudioClip: Identifiable, Codable, Equatable {
     var id: UUID
     /// Absolute path to source file (WAV/MP3).
@@ -90,6 +139,10 @@ struct AudioClip: Identifiable, Codable, Equatable {
     /// Duration of the audible region (seconds). Expanding is capped by remaining source.
     var duration: TimeInterval
     var sourceDuration: TimeInterval
+    /// When set, this clip is locked to its stereo partner (same id on both).
+    var pairID: UUID?
+    /// Present for synthesized click/thump clips.
+    var generation: ClipGeneration?
 
     init(
         id: UUID = UUID(),
@@ -98,7 +151,9 @@ struct AudioClip: Identifiable, Codable, Equatable {
         timelineStart: TimeInterval = 0,
         sourceIn: TimeInterval = 0,
         duration: TimeInterval,
-        sourceDuration: TimeInterval
+        sourceDuration: TimeInterval,
+        pairID: UUID? = nil,
+        generation: ClipGeneration? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -107,6 +162,8 @@ struct AudioClip: Identifiable, Codable, Equatable {
         self.sourceIn = sourceIn
         self.duration = duration
         self.sourceDuration = sourceDuration
+        self.pairID = pairID
+        self.generation = generation
     }
 
     var timelineEnd: TimeInterval { timelineStart + duration }
@@ -116,6 +173,8 @@ struct AudioClip: Identifiable, Codable, Equatable {
 
     /// How far the right edge can expand (seconds of unused tail).
     var maxExpandRight: TimeInterval { max(0, sourceDuration - sourceIn - duration) }
+
+    var isGenerated: Bool { generation != nil }
 }
 
 struct TimelineMarker: Identifiable, Codable, Equatable, Comparable {

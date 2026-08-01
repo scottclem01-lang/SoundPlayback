@@ -9,6 +9,11 @@ enum SPTheme {
     static let textSecondary = Color.white.opacity(0.55)
     static let accent = Color(red: 0.35, green: 0.72, blue: 0.55)
     static let clipFill = Color(red: 0.22, green: 0.45, blue: 0.38)
+    /// Warm amber — intro click / metronome clips (double-click to edit tempo).
+    static let clipFillClicks = Color(red: 0.62, green: 0.42, blue: 0.16)
+    /// Violet — thump / tone-pulse clips (double-click to edit tempo).
+    static let clipFillThump = Color(red: 0.42, green: 0.30, blue: 0.58)
+    static let trackLaneGenerated = Color(red: 0.17, green: 0.15, blue: 0.20)
     static let playhead = Color(red: 0.95, green: 0.55, blue: 0.25)
     static let marker = Color(red: 0.95, green: 0.78, blue: 0.30)
     static let headerWidth: CGFloat = 196
