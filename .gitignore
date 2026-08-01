@@ -1,0 +1,31 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+xcuserdata/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+*.swp
+*~
+.idea/
+.vscode/
+
+# Env / secrets
+.env
+.env.*
+*.pem
+*.p12
+*.key
+
+# Session autosaves / local scratch
+*.soundplayback.bak
