@@ -22,7 +22,20 @@ macOS multi-track music playback for TV / interface output. Timeline-first: impo
 - macOS 14+
 - Swift 5.9+
 
-## Build & run
+## Install (macOS app)
+
+Build a drag-to-Applications DMG:
+
+```bash
+cd ~/Documents/GitHub/SoundPlayback
+./Scripts/package_app.sh
+```
+
+Open `dist/SoundPlayback-1.0.1.dmg`, drag **SoundPlayback** into **Applications**, then launch from Launchpad or Spotlight.
+
+If Gatekeeper blocks the first open (ad-hoc signed local build), right-click the app → **Open**.
+
+## Build & run (dev)
 
 ```bash
 cd ~/Documents/GitHub/SoundPlayback

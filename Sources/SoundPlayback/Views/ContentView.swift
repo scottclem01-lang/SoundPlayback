@@ -39,27 +39,27 @@ struct ContentView: View {
         .onDisappear {
             removeKeyMonitor()
         }
-        .onChange(of: viewModel.isEditingTrackName) { _, editing in
+        .onChange(of: viewModel.isEditingInlineText) { _, editing in
             if editing {
                 workspaceFocused = false
             } else {
-                // Return keyboard to transport / marker shortcuts after rename.
+                // Return keyboard to transport / marker shortcuts after rename / note edit.
                 DispatchQueue.main.async {
                     workspaceFocused = true
                 }
             }
         }
         .onDeleteCommand {
-            guard !viewModel.isEditingTrackName else { return }
+            guard !viewModel.isEditingInlineText else { return }
             viewModel.deleteSelectedClips()
         }
         .onKeyPress(keys: [.space]) { _ in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             viewModel.togglePlayStop()
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("p")]) { _ in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             if viewModel.engine.transport == .playing {
                 viewModel.pause()
             } else if viewModel.engine.transport == .paused {
@@ -68,44 +68,54 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("m")]) { _ in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             viewModel.addMarkerAtPlayhead()
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("z")], phases: .down) { press in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             guard press.modifiers.contains(.command) else { return .ignored }
             viewModel.undoClipEdit()
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("c")], phases: .down) { press in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             guard press.modifiers.contains(.command) else { return .ignored }
             viewModel.copySelectedClips()
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("v")], phases: .down) { press in
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             guard press.modifiers.contains(.command) else { return .ignored }
             viewModel.pasteClipsAtPlayhead()
             return .handled
         }
         .onKeyPress(.delete) {
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             viewModel.deleteSelectedClips()
             return .handled
         }
         .onKeyPress(.deleteForward) {
-            guard !viewModel.isEditingTrackName else { return .ignored }
+            guard !viewModel.isEditingInlineText else { return .ignored }
             viewModel.deleteSelectedClips()
             return .handled
         }
-        .onKeyPress(characters: .decimalDigits, phases: .down) { press in
-            guard !viewModel.isEditingTrackName else { return .ignored }
-            guard let char = press.characters.first,
-                  let digit = Int(String(char)) else { return .ignored }
-            let shift = press.modifiers.contains(.shift)
-            viewModel.handleDigitKey(digit, shift: shift)
+        .onKeyPress(.leftArrow) {
+            guard !viewModel.isEditingInlineText else { return .ignored }
+            viewModel.nudgePlayheadByFrames(-1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            guard !viewModel.isEditingInlineText else { return .ignored }
+            viewModel.nudgePlayheadByFrames(1)
+            return .handled
+        }
+        // Unshifted digits + Shift punctuation (!@#…) → markers 1–20
+        .onKeyPress(characters: CharacterSet(charactersIn: "0123456789!@#$%^&*()"), phases: .down) { press in
+            guard !viewModel.isEditingInlineText else { return .ignored }
+            guard let ch = press.characters.first,
+                  let number = TimelineMarker.numberForCharacter(ch) else { return .ignored }
+            viewModel.jumpToMarker(number: number)
             return .handled
         }
         .alert("Error", isPresented: Binding(
@@ -187,10 +197,9 @@ struct ContentView: View {
         removeKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak viewModel] event in
             guard let viewModel else { return event }
-            // Don't steal typing from text fields / save panels / track rename.
-            if viewModel.isEditingTrackName { return event }
-            if let responder = NSApp.keyWindow?.firstResponder,
-               responder is NSTextView || responder is NSTextField {
+
+            // Never intercept typing in any text field / field editor.
+            if Self.isTypingInTextInput() || viewModel.isEditingInlineText {
                 return event
             }
 
@@ -200,6 +209,32 @@ struct ContentView: View {
                 viewModel.deleteSelectedClips()
                 return nil
             }
+
+            // Left / Right arrows — nudge playhead 0.5s.
+            if event.keyCode == 123 {
+                viewModel.nudgePlayheadByFrames(-1)
+                return nil
+            }
+            if event.keyCode == 124 {
+                viewModel.nudgePlayheadByFrames(1)
+                return nil
+            }
+
+            // Digits / Shift+digits → jump to markers 1–20.
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if !mods.contains(.command), !mods.contains(.option), !mods.contains(.control) {
+                if let digit = TimelineMarker.digitForKeyCode(event.keyCode) {
+                    viewModel.handleDigitKey(digit, shift: mods.contains(.shift))
+                    return nil
+                }
+                if let chars = event.characters,
+                   let ch = chars.first,
+                   let number = TimelineMarker.numberForCharacter(ch) {
+                    viewModel.jumpToMarker(number: number)
+                    return nil
+                }
+            }
+
             // ⌘C / ⌘V — copy selected clip(s), paste on same track(s) at playhead
             if event.modifierFlags.contains(.command) {
                 switch event.charactersIgnoringModifiers?.lowercased() {
@@ -215,6 +250,16 @@ struct ContentView: View {
             }
             return event
         }
+    }
+
+    /// True when AppKit/SwiftUI text input owns the keyboard (incl. field editor).
+    private static func isTypingInTextInput() -> Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        if responder is NSText || responder is NSTextView || responder is NSTextField {
+            return true
+        }
+        let name = NSStringFromClass(type(of: responder))
+        return name.contains("Text") || name.contains("FieldEditor")
     }
 
     private func removeKeyMonitor() {

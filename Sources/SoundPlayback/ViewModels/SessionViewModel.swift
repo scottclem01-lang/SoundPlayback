@@ -32,6 +32,14 @@ final class SessionViewModel: ObservableObject {
     @Published var selectedClipIDs: Set<UUID> = []
     /// True while a track-name TextField owns the keyboard (blocks transport shortcuts).
     @Published var isEditingTrackName = false
+    @Published var isEditingMarkerNote = false
+    @Published var isEditingClipStart = false
+    @Published var isEditingTimelineOrigin = false
+
+    /// True while an inline text field owns the keyboard.
+    var isEditingInlineText: Bool {
+        isEditingTrackName || isEditingMarkerNote || isEditingClipStart || isEditingTimelineOrigin
+    }
     /// Bumped when the timeline should consider scrolling to show the playhead (stop / marker jump).
     @Published private(set) var playheadFocusToken = UUID()
     @Published private(set) var canUndo = false
@@ -55,6 +63,8 @@ final class SessionViewModel: ObservableObject {
     static let minPixelsPerSecond: Double = 12
     static let maxPixelsPerSecond: Double = 400
     private static let minClipDuration: TimeInterval = 0.02
+    /// One arrow-key step (half a second).
+    private static let playheadFrameDuration: TimeInterval = 0.5
     private static let maxUndoSteps = 10
     /// Snap distance in pixels (converted via pixelsPerSecond).
     private static let snapPixels: Double = 12
@@ -301,6 +311,99 @@ final class SessionViewModel: ObservableObject {
         }
         moveSingleClip(clipID: clipID, toTrackID: toTrackID, timelineStart: timelineStart, movePairedSibling: true)
         syncMix()
+    }
+
+    /// Set a clip's timeline start from typed input (`12.5`, `01:23.45`, or `0:01:23.45`).
+    /// Values are display times (include timeline origin).
+    /// When `moveMarkers` is true, markers that sit on this clip move by the same delta.
+    func setClipStartTime(clipID: UUID, raw: String, moveMarkers: Bool) {
+        guard let display = TimeFormat.parse(raw) else {
+            errorMessage = "Enter a start time like 12.5, 01:23.45, or 0:01:23.45"
+            return
+        }
+        let start = max(0, display - session.timelineOrigin)
+        guard let loc = locateClip(clipID) else { return }
+        let clip = session.tracks[loc.track].clips[loc.clip]
+        let oldStart = clip.timelineStart
+        let oldEnd = clip.timelineEnd
+        let dt = start - oldStart
+        guard abs(dt) > 1e-9 else { return }
+
+        let trackID = session.tracks[loc.track].id
+        beginClipEdit()
+        moveClip(clipID: clipID, toTrackID: trackID, timelineStart: start)
+
+        if moveMarkers {
+            for i in session.markers.indices {
+                let t = session.markers[i].time
+                if t >= oldStart - 1e-6, t <= oldEnd + 1e-6 {
+                    session.markers[i].time = max(0, t + dt)
+                }
+            }
+            session.markers.sort()
+            if marksAreSequential {
+                renumberMarkersByTimeline()
+            }
+        }
+
+        endClipEdit()
+        let markerNote = moveMarkers ? " · markers moved" : ""
+        showStatus("Clip start → \(TimeFormat.clock(display))\(markerNote)")
+    }
+
+    /// Set the ruler / clock display origin (timeline left-edge label).
+    /// Clips stay put. Markers are re-anchored to their clips so they stay lined up with audio
+    /// (same absolute times as before when clips did not move).
+    func setTimelineOrigin(raw: String) {
+        guard let origin = TimeFormat.parse(raw) else {
+            errorMessage = "Enter a timeline start like 0:00:00.00 or 1:00:00"
+            return
+        }
+        let newOrigin = max(0, origin)
+        let oldOrigin = session.timelineOrigin
+        guard abs(newOrigin - oldOrigin) > 1e-9 else { return }
+
+        // Remember each marker’s offset from the clip it sits on (or nearest clip start).
+        let anchors = markerAnchorsToClips()
+
+        session.timelineOrigin = newOrigin
+
+        // Re-apply anchors so marks stay with audio, not with the old ruler labels.
+        applyMarkerAnchors(anchors)
+
+        if marksAreSequential {
+            renumberMarkersByTimeline()
+        }
+        showStatus("Timeline start → \(TimeFormat.clockWithHours(session.timelineOrigin))")
+    }
+
+    /// Offset of each marker from a clip it belongs to (containing clip, else nearest start).
+    private func markerAnchorsToClips() -> [(markerID: UUID, clipID: UUID, offset: TimeInterval)] {
+        let clips = session.tracks.flatMap(\.clips)
+        guard !clips.isEmpty else { return [] }
+
+        var result: [(markerID: UUID, clipID: UUID, offset: TimeInterval)] = []
+        for marker in session.markers {
+            let containing = clips.first { clip in
+                marker.time >= clip.timelineStart - 1e-6 && marker.time <= clip.timelineEnd + 1e-6
+            }
+            let clip = containing ?? clips.min(by: {
+                abs($0.timelineStart - marker.time) < abs($1.timelineStart - marker.time)
+            })
+            guard let clip else { continue }
+            result.append((marker.id, clip.id, marker.time - clip.timelineStart))
+        }
+        return result
+    }
+
+    private func applyMarkerAnchors(_ anchors: [(markerID: UUID, clipID: UUID, offset: TimeInterval)]) {
+        for anchor in anchors {
+            guard let clip = session.tracks.flatMap(\.clips).first(where: { $0.id == anchor.clipID }),
+                  let idx = session.markers.firstIndex(where: { $0.id == anchor.markerID })
+            else { continue }
+            session.markers[idx].time = max(0, clip.timelineStart + anchor.offset)
+        }
+        session.markers.sort()
     }
 
     /// Move every selected clip by the same time/track delta as the dragged clip.
@@ -642,6 +745,16 @@ final class SessionViewModel: ObservableObject {
         engine.setPlayStart(t)
     }
 
+    /// Nudge playhead by clock "frames" (centiseconds — matches `MM:SS.ff`).
+    func nudgePlayheadByFrames(_ frames: Int) {
+        let step = Self.playheadFrameDuration
+        let current = engine.transport == .stopped ? session.playStartTime : engine.playheadTime
+        let t = max(0, current + Double(frames) * step)
+        session.playStartTime = t
+        engine.seekPlayhead(to: t, alsoSetPlayStart: true)
+        requestPlayheadFocus()
+    }
+
     func play() {
         syncMix()
         engine.play()
@@ -691,6 +804,11 @@ final class SessionViewModel: ObservableObject {
         if marksAreSequential {
             renumberMarkersByTimeline()
         }
+    }
+
+    func setMarkerNote(id: UUID, note: String) {
+        guard let idx = session.markers.firstIndex(where: { $0.id == id }) else { return }
+        session.markers[idx].note = note.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func jumpToMarker(number: Int) {
@@ -1196,7 +1314,8 @@ final class SessionViewModel: ObservableObject {
         Task {
             var peaks: [String: [Float]] = [:]
             var buffers: [URL: ImportedAudio] = [:]
-            let urls = Set(session.tracks.flatMap(\.clips).map(\.sourceURL))
+            var missing: [URL] = []
+            let urls = Array(Set(session.tracks.flatMap(\.clips).map(\.sourceURL)))
             for url in urls {
                 _ = url.startAccessingSecurityScopedResource()
                 do {
@@ -1209,13 +1328,142 @@ final class SessionViewModel: ObservableObject {
                         peaks[peakKey(url: url, channel: channel)] = imported.peaks[channel]
                     }
                 } catch {
-                    errorMessage = "Missing audio: \(url.lastPathComponent)"
+                    missing.append(url)
                 }
             }
-            audioBuffers = buffers
-            waveformPeaks = peaks
-            syncMix()
-            isImporting = false
+
+            if !missing.isEmpty {
+                let remapped = await MainActor.run { () -> [URL: URL] in
+                    self.promptRelinkMissingAudio(missing)
+                }
+                for (oldURL, newURL) in remapped {
+                    _ = newURL.startAccessingSecurityScopedResource()
+                    do {
+                        let imported = try AudioFileImporter.importFile(
+                            at: newURL,
+                            targetSampleRate: session.sampleRate
+                        )
+                        buffers[newURL] = imported
+                        for channel in 0..<imported.channelCount {
+                            peaks[peakKey(url: newURL, channel: channel)] = imported.peaks[channel]
+                        }
+                        await MainActor.run {
+                            self.remapClipSourceURL(from: oldURL, to: newURL)
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.errorMessage = "Could not open \(newURL.lastPathComponent)"
+                        }
+                    }
+                }
+            }
+
+            await MainActor.run {
+                self.audioBuffers = buffers
+                self.waveformPeaks = peaks
+                self.syncMix()
+                self.isImporting = false
+                let stillMissing = Set(self.session.tracks.flatMap(\.clips).map(\.sourceURL))
+                    .filter { buffers[$0] == nil }
+                if stillMissing.isEmpty {
+                    if !missing.isEmpty {
+                        self.showStatus("Audio files linked")
+                    }
+                } else {
+                    let names = stillMissing.map(\.lastPathComponent).sorted().joined(separator: ", ")
+                    self.errorMessage = "Still missing: \(names)"
+                }
+            }
+        }
+    }
+
+    /// Ask the user to locate missing files. Matching basenames in the same folder are auto-linked.
+    @MainActor
+    private func promptRelinkMissingAudio(_ missing: [URL]) -> [URL: URL] {
+        var remaining = missing
+        var remapped: [URL: URL] = [:]
+
+        let intro = NSAlert()
+        intro.messageText = missing.count == 1
+            ? "Missing audio file"
+            : "Missing \(missing.count) audio files"
+        intro.informativeText = missing.count == 1
+            ? "Locate “\(missing[0].lastPathComponent)” to continue."
+            : "Locate each missing file. Other missing files in the same folder are linked automatically."
+        intro.addButton(withTitle: "Locate…")
+        intro.addButton(withTitle: "Skip All")
+        guard intro.runModal() == .alertFirstButtonReturn else {
+            return [:]
+        }
+
+        while let current = remaining.first {
+            let panel = NSOpenPanel()
+            panel.message = "Locate “\(current.lastPathComponent)”"
+            panel.prompt = "Choose"
+            panel.allowsMultipleSelection = true
+            panel.canChooseDirectories = false
+            panel.allowedContentTypes = [.wav, .mp3, .audio]
+            panel.directoryURL = current.deletingLastPathComponent()
+            panel.nameFieldStringValue = current.lastPathComponent
+
+            guard panel.runModal() == .OK, let chosen = panel.urls.first else {
+                remaining.removeAll { $0 == current }
+                continue
+            }
+
+            remapped[current] = chosen
+            remaining.removeAll { $0 == current }
+
+            // Auto-link other missing files found beside the chosen file(s).
+            let searchDirs = Set(panel.urls.map { $0.deletingLastPathComponent() })
+            let chosenByName = Dictionary(
+                uniqueKeysWithValues: panel.urls.map { ($0.lastPathComponent.lowercased(), $0) }
+            )
+            var still: [URL] = []
+            for url in remaining {
+                let name = url.lastPathComponent.lowercased()
+                if let match = chosenByName[name] {
+                    remapped[url] = match
+                    continue
+                }
+                var found: URL?
+                for dir in searchDirs {
+                    let candidate = dir.appendingPathComponent(url.lastPathComponent)
+                    if FileManager.default.fileExists(atPath: candidate.path) {
+                        found = candidate
+                        break
+                    }
+                }
+                if let found {
+                    remapped[url] = found
+                } else {
+                    still.append(url)
+                }
+            }
+            remaining = still
+
+            if !remaining.isEmpty {
+                let more = NSAlert()
+                more.messageText = "\(remaining.count) file(s) still missing"
+                more.informativeText = remaining.map(\.lastPathComponent).joined(separator: "\n")
+                more.addButton(withTitle: "Locate Next…")
+                more.addButton(withTitle: "Skip Rest")
+                if more.runModal() != .alertFirstButtonReturn {
+                    break
+                }
+            }
+        }
+
+        return remapped
+    }
+
+    private func remapClipSourceURL(from oldURL: URL, to newURL: URL) {
+        for t in session.tracks.indices {
+            for c in session.tracks[t].clips.indices {
+                if session.tracks[t].clips[c].sourceURL == oldURL {
+                    session.tracks[t].clips[c].sourceURL = newURL
+                }
+            }
         }
     }
 

@@ -9,12 +9,15 @@ struct TimelineLaneView: View {
     let pixelsPerSecond: Double
     let contentWidth: CGFloat
     let playheadTime: TimeInterval
+    let timelineOrigin: TimeInterval
     let selectedClipIDs: Set<UUID>
     let snapMoveStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimEnd: (AudioClip, TimeInterval) -> TimeInterval
     let onSelectClip: (_ id: UUID, _ additive: Bool) -> Void
     let onEditGeneratedClip: (UUID) -> Void
+    let onSetClipStartTime: (_ id: UUID, _ raw: String, _ moveMarkers: Bool) -> Void
+    let onClipStartEditingChanged: (Bool) -> Void
     let onEmptyLaneClick: (TimeInterval) -> Void
     let onGhostChange: (ClipDragGhost?) -> Void
     let onBeginEdit: () -> Void
@@ -45,11 +48,14 @@ struct TimelineLaneView: View {
                     trackCount: allTracks.count,
                     isSelected: selectedClipIDs.contains(clip.id),
                     selectionCount: selectedClipIDs.count,
+                    timelineOrigin: timelineOrigin,
                     snapMoveStart: snapMoveStart,
                     snapTrimStart: snapTrimStart,
                     snapTrimEnd: snapTrimEnd,
                     onSelect: { additive in onSelectClip(clip.id, additive) },
                     onEditGenerated: { onEditGeneratedClip(clip.id) },
+                    onSetStartTime: { raw, moveMarkers in onSetClipStartTime(clip.id, raw, moveMarkers) },
+                    onStartEditingChanged: onClipStartEditingChanged,
                     onGhostChange: onGhostChange,
                     onBeginEdit: onBeginEdit,
                     onEndEdit: onEndEdit,
@@ -92,11 +98,14 @@ struct InteractiveClipView: View {
     let trackCount: Int
     let isSelected: Bool
     let selectionCount: Int
+    let timelineOrigin: TimeInterval
     let snapMoveStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimEnd: (AudioClip, TimeInterval) -> TimeInterval
     let onSelect: (_ additive: Bool) -> Void
     let onEditGenerated: () -> Void
+    let onSetStartTime: (String, Bool) -> Void  // raw time, moveMarkers
+    let onStartEditingChanged: (Bool) -> Void
     let onGhostChange: (ClipDragGhost?) -> Void
     let onBeginEdit: () -> Void
     let onEndEdit: () -> Void
@@ -113,6 +122,10 @@ struct InteractiveClipView: View {
     @State private var trimPreviewDuration: TimeInterval?
     @State private var hoveringTrim = false
     @State private var trimLockedHaptic = false
+    @State private var isEditingStart = false
+    @State private var draftStart = ""
+    @State private var moveMarkersWithClip = true
+    @FocusState private var startFieldFocused: Bool
 
     private let edgeHit: CGFloat = 10
     private let minClipDuration: TimeInterval = 0.02
@@ -137,20 +150,36 @@ struct InteractiveClipView: View {
                 .opacity(moving ? 0.35 : 1)
         }
         .frame(width: max(8, clip.duration * pixelsPerSecond), height: height, alignment: .topLeading)
-        .zIndex(moving || dragKind != nil ? 10 : (isSelected ? 2 : 0))
+        .zIndex(moving || dragKind != nil || isEditingStart ? 10 : (isSelected ? 2 : 0))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             onSelect(false)
             if clip.isGenerated {
                 onEditGenerated()
+            } else {
+                beginStartEdit()
             }
         }
         .onTapGesture(count: 1) {
+            guard !isEditingStart else { return }
             onSelect(modifierAdditive)
+        }
+        .popover(isPresented: $isEditingStart, arrowEdge: .top) {
+            clipStartPopover
+        }
+        .onChange(of: isEditingStart) { _, editing in
+            onStartEditingChanged(editing)
+            if editing {
+                draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
+                DispatchQueue.main.async {
+                    startFieldFocused = true
+                }
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 3)
                 .onChanged { value in
+                    guard !isEditingStart else { return }
                     if dragKind == nil {
                         // Keep multi-selection when dragging an already-selected clip.
                         if !isSelected {
@@ -234,6 +263,62 @@ struct InteractiveClipView: View {
                     onEndEdit()
                 }
         )
+        .help(
+            clip.isGenerated
+                ? "Double-click to change tempo"
+                : "Double-click to set start time"
+        )
+    }
+
+    private var clipStartPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Clip start")
+                .font(.headline)
+            Text("Display time on the timeline")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("0:00:00.00", text: $draftStart)
+                .font(.system(.title3, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 140)
+                .focused($startFieldFocused)
+                .onSubmit { commitStartEdit() }
+                .onExitCommand { cancelStartEdit() }
+            Toggle("Move markers with this clip", isOn: $moveMarkersWithClip)
+                .toggleStyle(.checkbox)
+                .help("When on, markers that sit on this clip move by the same amount.")
+            HStack {
+                Button("Cancel", role: .cancel) { cancelStartEdit() }
+                Spacer()
+                Button("Set") { commitStartEdit() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+        .frame(minWidth: 220)
+    }
+
+    private func beginStartEdit() {
+        draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
+        moveMarkersWithClip = true
+        isEditingStart = true
+    }
+
+    private func commitStartEdit() {
+        guard isEditingStart else { return }
+        let raw = draftStart.trimmingCharacters(in: .whitespacesAndNewlines)
+        let moveMarkers = moveMarkersWithClip
+        isEditingStart = false
+        startFieldFocused = false
+        guard !raw.isEmpty else { return }
+        onSetStartTime(raw, moveMarkers)
+    }
+
+    private func cancelStartEdit() {
+        guard isEditingStart else { return }
+        isEditingStart = false
+        startFieldFocused = false
+        draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
     }
 
     private func noteTrimLock(proposed: TimeInterval, clamped: TimeInterval) {
@@ -280,7 +365,11 @@ struct InteractiveClipView: View {
                     lineWidth: isSelected ? 2 : (hoveringTrim ? 1.5 : 1)
                 )
         )
-        .help(clip.isGenerated ? "Double-click to change tempo" : "")
+        .help(
+            clip.isGenerated
+                ? "Double-click to change tempo"
+                : "Double-click to set start time"
+        )
     }
 
     private var clipFillColor: Color {

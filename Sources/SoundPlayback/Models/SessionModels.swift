@@ -11,6 +11,45 @@ struct PlaybackSession: Codable, Equatable {
     var outputDeviceUID: String?
     /// Playhead start point used after Stop (seconds from timeline zero).
     var playStartTime: TimeInterval
+    /// Display origin for the ruler / clocks. Internal positions stay 0-based;
+    /// shown time = internal + timelineOrigin (e.g. origin 1:00:00 → left edge reads 1:00:00).
+    var timelineOrigin: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case version, name, sampleRate, tracks, markers, outputDeviceUID, playStartTime, timelineOrigin
+    }
+
+    init(
+        version: Int = 1,
+        name: String,
+        sampleRate: Double,
+        tracks: [Track],
+        markers: [TimelineMarker],
+        outputDeviceUID: String?,
+        playStartTime: TimeInterval,
+        timelineOrigin: TimeInterval = 0
+    ) {
+        self.version = version
+        self.name = name
+        self.sampleRate = sampleRate
+        self.tracks = tracks
+        self.markers = markers
+        self.outputDeviceUID = outputDeviceUID
+        self.playStartTime = playStartTime
+        self.timelineOrigin = timelineOrigin
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        name = try c.decode(String.self, forKey: .name)
+        sampleRate = try c.decode(Double.self, forKey: .sampleRate)
+        tracks = try c.decode([Track].self, forKey: .tracks)
+        markers = try c.decode([TimelineMarker].self, forKey: .markers)
+        outputDeviceUID = try c.decodeIfPresent(String.self, forKey: .outputDeviceUID)
+        playStartTime = try c.decodeIfPresent(TimeInterval.self, forKey: .playStartTime) ?? 0
+        timelineOrigin = try c.decodeIfPresent(TimeInterval.self, forKey: .timelineOrigin) ?? 0
+    }
 
     static func blank(trackCount: Int = 4) -> PlaybackSession {
         PlaybackSession(
@@ -19,7 +58,8 @@ struct PlaybackSession: Codable, Equatable {
             tracks: (0..<trackCount).map { Track(name: "Track \($0 + 1)") },
             markers: [],
             outputDeviceUID: nil,
-            playStartTime: 0
+            playStartTime: 0,
+            timelineOrigin: 0
         )
     }
 }
@@ -182,11 +222,26 @@ struct TimelineMarker: Identifiable, Codable, Equatable, Comparable {
     /// Sequential display number starting at 1.
     var number: Int
     var time: TimeInterval
+    /// Optional label shown next to the mark (intro, chorus 1, …).
+    var note: String
 
-    init(id: UUID = UUID(), number: Int, time: TimeInterval) {
+    init(id: UUID = UUID(), number: Int, time: TimeInterval, note: String = "") {
         self.id = id
         self.number = number
         self.time = time
+        self.note = note
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, number, time, note
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        number = try c.decode(Int.self, forKey: .number)
+        time = try c.decode(TimeInterval.self, forKey: .time)
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
     }
 
     static func < (lhs: TimelineMarker, rhs: TimelineMarker) -> Bool {
@@ -200,5 +255,49 @@ extension TimelineMarker {
         guard (0...9).contains(digit) else { return nil }
         let base = digit == 0 ? 10 : digit
         return shift ? base + 10 : base
+    }
+
+    /// US keyboard: `1`→1 … `0`→10, and `!`→11 … `)`→20.
+    static func numberForCharacter(_ raw: Character) -> Int? {
+        switch raw {
+        case "1": return 1
+        case "2": return 2
+        case "3": return 3
+        case "4": return 4
+        case "5": return 5
+        case "6": return 6
+        case "7": return 7
+        case "8": return 8
+        case "9": return 9
+        case "0": return 10
+        case "!": return 11
+        case "@": return 12
+        case "#": return 13
+        case "$": return 14
+        case "%": return 15
+        case "^": return 16
+        case "&": return 17
+        case "*": return 18
+        case "(": return 19
+        case ")": return 20
+        default: return nil
+        }
+    }
+
+    /// Mac number-row key codes → digit 0–9 (keyCode 29 = 0).
+    static func digitForKeyCode(_ keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 18: return 1
+        case 19: return 2
+        case 20: return 3
+        case 21: return 4
+        case 23: return 5
+        case 22: return 6
+        case 26: return 7
+        case 28: return 8
+        case 25: return 9
+        case 29: return 0
+        default: return nil
+        }
     }
 }

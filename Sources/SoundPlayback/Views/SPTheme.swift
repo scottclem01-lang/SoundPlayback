@@ -18,5 +18,6 @@ enum SPTheme {
     static let marker = Color(red: 0.95, green: 0.78, blue: 0.30)
     static let headerWidth: CGFloat = 196
     static let trackHeight: CGFloat = 72
-    static let rulerHeight: CGFloat = 28
+    /// Tall enough for marker badges on top and tick labels along the bottom.
+    static let rulerHeight: CGFloat = 40
 }

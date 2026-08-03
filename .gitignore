@@ -29,3 +29,8 @@ xcuserdata/
 
 # Session autosaves / local scratch
 *.soundplayback.bak
+
+# Packaged app / DMG
+dist/
+*.app/
+*.dmg

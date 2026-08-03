@@ -21,7 +21,8 @@ struct TimelineWorkspaceView: View {
             .map(\.timelineEnd)
             .max() ?? 0
         let markerEnd = viewModel.session.markers.map(\.time).max() ?? 0
-        return max(60, clipEnd + 10, markerEnd + 10, engine.playheadTime + 10)
+        // At least 10 minutes of ruler so empty / short sessions still scroll usefully.
+        return max(600, clipEnd + 10, markerEnd + 10, engine.playheadTime + 10)
     }
 
     private var timelineWidth: CGFloat {
@@ -167,10 +168,13 @@ struct TimelineWorkspaceView: View {
                     playStartTime: viewModel.session.playStartTime,
                     pixelsPerSecond: viewModel.pixelsPerSecond,
                     contentWidth: timelineWidth,
+                    timelineOrigin: viewModel.session.timelineOrigin,
                     onSeek: { viewModel.setPlayStart(at: $0) },
                     onScrub: { engine.scrubPlayhead(to: $0) },
                     onMoveMarker: { id, time in viewModel.moveMarker(id: id, to: time) },
-                    onDeleteMarker: { id in viewModel.deleteMarker(id: id) }
+                    onDeleteMarker: { id in viewModel.deleteMarker(id: id) },
+                    onSetMarkerNote: { id, note in viewModel.setMarkerNote(id: id, note: note) },
+                    onNoteEditingChanged: { editing in viewModel.isEditingMarkerNote = editing }
                 )
                 .frame(width: timelineWidth, height: SPTheme.rulerHeight)
 
@@ -183,12 +187,17 @@ struct TimelineWorkspaceView: View {
                         pixelsPerSecond: viewModel.pixelsPerSecond,
                         contentWidth: timelineWidth,
                         playheadTime: engine.playheadTime,
+                        timelineOrigin: viewModel.session.timelineOrigin,
                         selectedClipIDs: viewModel.selectedClipIDs,
                         snapMoveStart: { clip, start in viewModel.snappedMoveStart(for: clip, proposedStart: start) },
                         snapTrimStart: { clip, start in viewModel.snappedTrimStart(for: clip, proposedStart: start) },
                         snapTrimEnd: { clip, end in viewModel.snappedTrimEnd(for: clip, proposedEnd: end) },
                         onSelectClip: { id, additive in viewModel.selectClip(id: id, additive: additive) },
                         onEditGeneratedClip: { viewModel.beginEditGeneratedClip(clipID: $0) },
+                        onSetClipStartTime: { id, raw, moveMarkers in
+                            viewModel.setClipStartTime(clipID: id, raw: raw, moveMarkers: moveMarkers)
+                        },
+                        onClipStartEditingChanged: { editing in viewModel.isEditingClipStart = editing },
                         onEmptyLaneClick: { time in
                             viewModel.clearClipSelection()
                             viewModel.setPlayStart(at: time)

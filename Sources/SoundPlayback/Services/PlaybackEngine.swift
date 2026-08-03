@@ -114,16 +114,8 @@ final class PlaybackEngine: ObservableObject {
         let engineSampleRate = outFormat.sampleRate > 0 ? outFormat.sampleRate : preferredSampleRate
         let engineChannelCount = max(1, min(4, Int(outFormat.channelCount)))
 
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: engineSampleRate,
-            channels: AVAudioChannelCount(engineChannelCount),
-            interleaved: false
-        ) else {
-            throw NSError(domain: "SoundPlayback", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Could not create audio format."
-            ])
-        }
+        // AVAudioFormat(commonFormat:channels:) returns nil for >2 channels; use a discrete layout.
+        let format = try makeRenderFormat(sampleRate: engineSampleRate, channelCount: engineChannelCount)
 
         renderState.lock.lock()
         renderState.sampleRate = engineSampleRate
@@ -312,8 +304,36 @@ final class PlaybackEngine: ObservableObject {
         isConfigured = false
     }
 
+    private func makeRenderFormat(sampleRate: Double, channelCount: Int) throws -> AVAudioFormat {
+        if let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: false
+        ) {
+            return format
+        }
+
+        let layoutTag = kAudioChannelLayoutTag_DiscreteInOrder | AudioChannelLayoutTag(channelCount)
+        guard let layout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            throw NSError(domain: "SoundPlayback", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Could not create \(channelCount)-channel layout."
+            ])
+        }
+        return AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            interleaved: false,
+            channelLayout: layout
+        )
+    }
+
     private func setCurrentDevice(_ deviceID: AudioDeviceID) throws {
-        guard let audioUnit = audioEngine.outputNode.audioUnit else { return }
+        guard let audioUnit = audioEngine.outputNode.audioUnit else {
+            throw NSError(domain: "SoundPlayback", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Audio output unit is not available."
+            ])
+        }
         var id = deviceID
         let status = AudioUnitSetProperty(
             audioUnit,
