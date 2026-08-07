@@ -29,22 +29,36 @@ struct TrackHeaderView: View {
         switch kind {
         case .introClicks: return SPTheme.clipFillClicks.opacity(0.35)
         case .thump: return SPTheme.clipFillThump.opacity(0.35)
+        case .timecode: return SPTheme.clipFillTimecode.opacity(0.35)
         }
+    }
+
+    private var generatedBadgeLabel: String? {
+        let kinds = Set(track.clips.compactMap(\.generation?.kind))
+        if kinds.contains(.timecode) { return "LTC" }
+        if kinds.contains(.introClicks) || kinds.contains(.thump) { return "BPM" }
+        return nil
+    }
+
+    private var generatedBadgeHelp: String {
+        generatedBadgeLabel == "LTC"
+            ? "Double-click the clip to edit timecode"
+            : "Double-click the clip to edit tempo"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 trackNameLabel
-                if isGeneratedTrack {
-                    Text("BPM")
+                if let badge = generatedBadgeLabel {
+                    Text(badge)
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(SPTheme.textSecondary)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(Color.white.opacity(0.1))
                         .cornerRadius(3)
-                        .help("Double-click the clip to edit tempo")
+                        .help(generatedBadgeHelp)
                 }
                 Spacer(minLength: 0)
                 Button(action: onDelete) {

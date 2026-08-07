@@ -20,6 +20,7 @@ final class SessionViewModel: ObservableObject {
     @Published var pendingImport: PendingImport?
     @Published var showIntroClicksSheet = false
     @Published var showThumpTrackSheet = false
+    @Published var showTimecodeSheet = false
     @Published var showTapTempoSheet = false
     @Published var pendingGeneratedEdit: EditGeneratedClipRequest?
     @Published private(set) var detectedTempoBPM: Double?
@@ -63,8 +64,6 @@ final class SessionViewModel: ObservableObject {
     static let minPixelsPerSecond: Double = 12
     static let maxPixelsPerSecond: Double = 400
     private static let minClipDuration: TimeInterval = 0.02
-    /// One arrow-key step (half a second).
-    private static let playheadFrameDuration: TimeInterval = 0.5
     private static let maxUndoSteps = 10
     /// Snap distance in pixels (converted via pixelsPerSecond).
     private static let snapPixels: Double = 12
@@ -313,12 +312,20 @@ final class SessionViewModel: ObservableObject {
         syncMix()
     }
 
-    /// Set a clip's timeline start from typed input (`12.5`, `01:23.45`, or `0:01:23.45`).
+    /// Set a clip's timeline start from typed SMPTE (`HH:MM:SS:FF` / `HH:MM:SS;FF`) or legacy seconds.
     /// Values are display times (include timeline origin).
-    /// When `moveMarkers` is true, markers that sit on this clip move by the same delta.
-    func setClipStartTime(clipID: UUID, raw: String, moveMarkers: Bool) {
-        guard let display = TimeFormat.parse(raw) else {
-            errorMessage = "Enter a start time like 12.5, 01:23.45, or 0:01:23.45"
+    /// When `moveMarkers` is true, markers move by the same delta (all markers if `moveAllTracks`,
+    /// otherwise markers that sit on this clip).
+    /// When `moveAllTracks` is true, every clip on every track shifts by the same delta.
+    func setClipStartTime(clipID: UUID, raw: String, moveMarkers: Bool, moveAllTracks: Bool = false) {
+        let rate = session.timelineFrameRate
+        let display: TimeInterval
+        if let tc = SMPTETimecode.parse(raw, rate: rate) {
+            display = SMPTETimecode.realtimeSeconds(of: tc, rate: rate)
+        } else if let parsed = TimeFormat.parse(raw) {
+            display = parsed
+        } else {
+            errorMessage = "Enter SMPTE like \(rate.isDropFrame ? "01:00:00;00" : "01:00:00:00")"
             return
         }
         let start = max(0, display - session.timelineOrigin)
@@ -329,15 +336,33 @@ final class SessionViewModel: ObservableObject {
         let dt = start - oldStart
         guard abs(dt) > 1e-9 else { return }
 
-        let trackID = session.tracks[loc.track].id
         beginClipEdit()
-        moveClip(clipID: clipID, toTrackID: trackID, timelineStart: start)
+
+        if moveAllTracks {
+            for ti in session.tracks.indices {
+                for ci in session.tracks[ti].clips.indices {
+                    session.tracks[ti].clips[ci].timelineStart = max(
+                        0,
+                        session.tracks[ti].clips[ci].timelineStart + dt
+                    )
+                }
+            }
+        } else {
+            let trackID = session.tracks[loc.track].id
+            moveClip(clipID: clipID, toTrackID: trackID, timelineStart: start)
+        }
 
         if moveMarkers {
-            for i in session.markers.indices {
-                let t = session.markers[i].time
-                if t >= oldStart - 1e-6, t <= oldEnd + 1e-6 {
-                    session.markers[i].time = max(0, t + dt)
+            if moveAllTracks {
+                for i in session.markers.indices {
+                    session.markers[i].time = max(0, session.markers[i].time + dt)
+                }
+            } else {
+                for i in session.markers.indices {
+                    let t = session.markers[i].time
+                    if t >= oldStart - 1e-6, t <= oldEnd + 1e-6 {
+                        session.markers[i].time = max(0, t + dt)
+                    }
                 }
             }
             session.markers.sort()
@@ -347,19 +372,27 @@ final class SessionViewModel: ObservableObject {
         }
 
         endClipEdit()
-        let markerNote = moveMarkers ? " · markers moved" : ""
-        showStatus("Clip start → \(TimeFormat.clock(display))\(markerNote)")
+        syncMix()
+        var note = ""
+        if moveAllTracks { note += " · all tracks" }
+        if moveMarkers { note += " · markers" }
+        showStatus("Clip start → \(TimeFormat.timecode(display, rate: rate))\(note)")
     }
 
-    /// Set the ruler / clock display origin (timeline left-edge label).
+    /// Set the ruler / clock display origin from SMPTE (or legacy seconds string).
     /// Clips stay put. Markers are re-anchored to their clips so they stay lined up with audio
     /// (same absolute times as before when clips did not move).
     func setTimelineOrigin(raw: String) {
-        guard let origin = TimeFormat.parse(raw) else {
-            errorMessage = "Enter a timeline start like 0:00:00.00 or 1:00:00"
+        let rate = session.timelineFrameRate
+        let newOrigin: TimeInterval
+        if let tc = SMPTETimecode.parse(raw, rate: rate) {
+            newOrigin = SMPTETimecode.realtimeSeconds(of: tc, rate: rate)
+        } else if let parsed = TimeFormat.parse(raw) {
+            newOrigin = max(0, parsed)
+        } else {
+            errorMessage = "Enter timeline start as \(rate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF")"
             return
         }
-        let newOrigin = max(0, origin)
         let oldOrigin = session.timelineOrigin
         guard abs(newOrigin - oldOrigin) > 1e-9 else { return }
 
@@ -374,7 +407,13 @@ final class SessionViewModel: ObservableObject {
         if marksAreSequential {
             renumberMarkersByTimeline()
         }
-        showStatus("Timeline start → \(TimeFormat.clockWithHours(session.timelineOrigin))")
+        showStatus("Timeline start → \(TimeFormat.timecode(session.timelineOrigin, rate: rate))")
+    }
+
+    func setTimelineFrameRate(_ rate: TimecodeFrameRate) {
+        guard session.timelineFrameRate != rate else { return }
+        session.timelineFrameRate = rate
+        showStatus("Timeline \(rate.displayName) fps")
     }
 
     /// Offset of each marker from a clip it belongs to (containing clip, else nearest start).
@@ -745,9 +784,9 @@ final class SessionViewModel: ObservableObject {
         engine.setPlayStart(t)
     }
 
-    /// Nudge playhead by clock "frames" (centiseconds — matches `MM:SS.ff`).
+    /// Nudge playhead by whole project-rate frames.
     func nudgePlayheadByFrames(_ frames: Int) {
-        let step = Self.playheadFrameDuration
+        let step = 1.0 / session.timelineFrameRate.framesPerSecond
         let current = engine.transport == .stopped ? session.playStartTime : engine.playheadTime
         let t = max(0, current + Double(frames) * step)
         session.playStartTime = t
@@ -811,6 +850,11 @@ final class SessionViewModel: ObservableObject {
         session.markers[idx].note = note.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    func setMarkerFavorite(id: UUID, isFavorite: Bool) {
+        guard let idx = session.markers.firstIndex(where: { $0.id == id }) else { return }
+        session.markers[idx].isFavorite = isFavorite
+    }
+
     func jumpToMarker(number: Int) {
         guard let marker = session.markers.first(where: { $0.number == number }) else { return }
         let t = marker.time
@@ -865,24 +909,33 @@ final class SessionViewModel: ObservableObject {
         pendingImport = nil
         importQueue.removeAll { $0.id == current.id }
         isImporting = true
-        Task {
-            defer {
-                isImporting = false
-                presentNextImportIfNeeded()
-            }
+        let sampleRate = session.sampleRate
+        let url = current.url
+        let placementChannels = current.placementChannels
+        let displayName = current.displayName
+        Task.detached(priority: .userInitiated) {
             do {
+                _ = url.startAccessingSecurityScopedResource()
                 let imported = try AudioFileImporter.importFile(
-                    at: current.url,
-                    targetSampleRate: session.sampleRate
+                    at: url,
+                    targetSampleRate: sampleRate
                 )
-                audioBuffers[current.url] = imported
-                for channel in 0..<min(current.placementChannels, imported.channelCount) {
-                    waveformPeaks[peakKey(url: current.url, channel: channel)] = imported.peaks[channel]
+                await MainActor.run {
+                    self.audioBuffers[url] = imported
+                    for channel in 0..<min(placementChannels, imported.channelCount) {
+                        self.waveformPeaks[Self.peakKey(url: url, channel: channel)] = imported.peaks[channel]
+                    }
+                    self.placeImported(imported, placementChannels: placementChannels, choice: choice)
+                    self.syncMix()
+                    self.isImporting = false
+                    self.presentNextImportIfNeeded()
                 }
-                placeImported(imported, placementChannels: current.placementChannels, choice: choice)
-                syncMix()
             } catch {
-                errorMessage = "\(current.displayName): \(error.localizedDescription)"
+                await MainActor.run {
+                    self.errorMessage = "\(displayName): \(error.localizedDescription)"
+                    self.isImporting = false
+                    self.presentNextImportIfNeeded()
+                }
             }
         }
     }
@@ -944,10 +997,66 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
+    /// Display clock seconds at a clip’s left edge (timeline origin + start).
+    func displaySecondsForClip(id: UUID) -> TimeInterval {
+        guard let loc = locateClip(id) else { return session.timelineOrigin }
+        return session.tracks[loc.track].clips[loc.clip].timelineStart + session.timelineOrigin
+    }
+
+    /// Display seconds at the current play marker (for lock-to-timeline timecode).
+    var placementDisplaySeconds: TimeInterval {
+        placementPlayMarkerTime() + session.timelineOrigin
+    }
+
+    func addTimecodeTrack(_ request: TimecodeTrackRequest) {
+        do {
+            // Locked LTC always uses the project timeline frame rate.
+            let rate = request.lockToTimeline ? session.timelineFrameRate : request.frameRate
+            let placement = placementPlayMarkerTime()
+            let start: SMPTEComponents
+            if request.lockToTimeline {
+                start = SMPTETimecode.components(
+                    fromDisplaySeconds: placement + session.timelineOrigin,
+                    rate: rate
+                )
+            } else if let parsed = SMPTETimecode.parse(request.startTimecode, rate: rate) {
+                start = parsed
+            } else {
+                errorMessage = "Enter start timecode as \(rate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF")"
+                return
+            }
+            let length = max(0.5, min(14_400, request.lengthSeconds))
+            let imported = try GeneratedAudioService.makeTimecode(
+                frameRate: rate,
+                start: start,
+                lengthSeconds: length,
+                sampleRate: session.sampleRate
+            )
+            let generation = ClipGeneration.timecode(
+                frameRate: rate,
+                start: start,
+                trackLengthSeconds: length,
+                lockToTimeline: request.lockToTimeline
+            )
+            placeGenerated(
+                imported,
+                on: request.track,
+                generation: generation,
+                preferredTrackName: "Timecode",
+                timelineStart: placement
+            )
+            showStatus("Timecode track added · \(start.formatted(rate: rate))")
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func beginEditGeneratedClip(clipID: UUID) {
         guard let loc = locateClip(clipID),
               let generation = session.tracks[loc.track].clips[loc.clip].generation else { return }
         let clip = session.tracks[loc.track].clips[loc.clip]
+        let rate = generation.resolvedFrameRate
+        let start = generation.resolvedStartComponents
         pendingGeneratedEdit = EditGeneratedClipRequest(
             id: clipID,
             kind: generation.kind,
@@ -956,7 +1065,10 @@ final class SessionViewModel: ObservableObject {
             clickCount: generation.clickCount ?? 4,
             frequencyHz: generation.frequencyHz ?? 55,
             thumpTenths: generation.thumpTenths ?? 2,
-            trackLengthSeconds: generation.trackLengthSeconds ?? max(clip.duration, 4)
+            trackLengthSeconds: generation.trackLengthSeconds ?? max(clip.duration, 4),
+            timecodeFrameRate: rate,
+            timecodeStart: start.formatted(rate: rate),
+            lockToTimeline: generation.lockToTimeline ?? false
         )
     }
 
@@ -966,21 +1078,21 @@ final class SessionViewModel: ObservableObject {
         var clip = session.tracks[loc.track].clips[loc.clip]
         guard var generation = clip.generation else { return }
 
-        let bpm = max(20, min(400, request.tempoBPM))
-        generation.tempoBPM = bpm
-
         do {
             let imported: ImportedAudio
             switch generation.kind {
             case .introClicks:
+                let bpm = max(20, min(400, request.tempoBPM))
                 let count = max(1, min(32, request.clickCount))
                 imported = try GeneratedAudioService.makeIntroClicks(
                     tempoBPM: bpm,
                     clickCount: count,
                     sampleRate: session.sampleRate
                 )
+                generation.tempoBPM = bpm
                 generation.clickCount = count
             case .thump:
+                let bpm = max(20, min(400, request.tempoBPM))
                 let freq = max(20, min(4000, request.frequencyHz))
                 let tenths = max(1, min(20, request.thumpTenths))
                 let length = max(0.5, min(600, request.trackLengthSeconds))
@@ -991,9 +1103,40 @@ final class SessionViewModel: ObservableObject {
                     trackLengthSeconds: length,
                     sampleRate: session.sampleRate
                 )
+                generation.tempoBPM = bpm
                 generation.frequencyHz = freq
                 generation.thumpTenths = tenths
                 generation.trackLengthSeconds = length
+            case .timecode:
+                // When locked, re-align to the project rate + clip’s timeline position.
+                let rate = request.lockToTimeline
+                    ? session.timelineFrameRate
+                    : request.timecodeFrameRate
+                let length = max(0.5, min(14_400, request.trackLengthSeconds))
+                let start: SMPTEComponents
+                if request.lockToTimeline {
+                    start = SMPTETimecode.components(
+                        fromDisplaySeconds: clip.timelineStart + session.timelineOrigin,
+                        rate: rate
+                    )
+                } else if let parsed = SMPTETimecode.parse(request.timecodeStart, rate: rate) {
+                    start = parsed
+                } else {
+                    errorMessage = "Enter start timecode as \(rate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF")"
+                    return
+                }
+                imported = try GeneratedAudioService.makeTimecode(
+                    frameRate: rate,
+                    start: start,
+                    lengthSeconds: length,
+                    sampleRate: session.sampleRate
+                )
+                generation = ClipGeneration.timecode(
+                    frameRate: rate,
+                    start: start,
+                    trackLengthSeconds: length,
+                    lockToTimeline: request.lockToTimeline
+                )
             }
 
             let oldURL = clip.sourceURL
@@ -1032,7 +1175,8 @@ final class SessionViewModel: ObservableObject {
         _ imported: ImportedAudio,
         on trackChoice: GeneratedPlacementTrack,
         generation: ClipGeneration,
-        preferredTrackName: String
+        preferredTrackName: String,
+        timelineStart: TimeInterval? = nil
     ) {
         audioBuffers[imported.url] = imported
         if let peaks = imported.peaks.first {
@@ -1050,7 +1194,7 @@ final class SessionViewModel: ObservableObject {
             session.tracks[trackIndex].name = preferredTrackName
         }
 
-        let start = placementPlayMarkerTime()
+        let start = timelineStart ?? placementPlayMarkerTime()
         if session.tracks[trackIndex].clips.isEmpty {
             session.tracks[trackIndex].outputMask = .out1
             // Rename empty destination tracks that still have the default name.
@@ -1174,8 +1318,12 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    private func peakKey(url: URL, channel: Int) -> String {
+    nonisolated private static func peakKey(url: URL, channel: Int) -> String {
         "\(url.absoluteString)#\(channel)"
+    }
+
+    private func peakKey(url: URL, channel: Int) -> String {
+        Self.peakKey(url: url, channel: channel)
     }
 
     // MARK: - Document
@@ -1311,21 +1459,24 @@ final class SessionViewModel: ObservableObject {
 
     private func reloadBuffersForSession() {
         isImporting = true
-        Task {
+        let sampleRate = session.sampleRate
+        let urls = Array(Set(session.tracks.flatMap(\.clips).map(\.sourceURL)))
+        // Detached: importing multi‑MB LTC / thump WAVs on the main actor beachballs the UI.
+        Task.detached(priority: .userInitiated) {
             var peaks: [String: [Float]] = [:]
             var buffers: [URL: ImportedAudio] = [:]
             var missing: [URL] = []
-            let urls = Array(Set(session.tracks.flatMap(\.clips).map(\.sourceURL)))
+
             for url in urls {
                 _ = url.startAccessingSecurityScopedResource()
                 do {
                     let imported = try AudioFileImporter.importFile(
                         at: url,
-                        targetSampleRate: session.sampleRate
+                        targetSampleRate: sampleRate
                     )
                     buffers[url] = imported
                     for channel in 0..<imported.channelCount {
-                        peaks[peakKey(url: url, channel: channel)] = imported.peaks[channel]
+                        peaks[Self.peakKey(url: url, channel: channel)] = imported.peaks[channel]
                     }
                 } catch {
                     missing.append(url)
@@ -1333,19 +1484,20 @@ final class SessionViewModel: ObservableObject {
             }
 
             if !missing.isEmpty {
+                let missingCopy = missing
                 let remapped = await MainActor.run { () -> [URL: URL] in
-                    self.promptRelinkMissingAudio(missing)
+                    self.promptRelinkMissingAudio(missingCopy)
                 }
                 for (oldURL, newURL) in remapped {
                     _ = newURL.startAccessingSecurityScopedResource()
                     do {
                         let imported = try AudioFileImporter.importFile(
                             at: newURL,
-                            targetSampleRate: session.sampleRate
+                            targetSampleRate: sampleRate
                         )
                         buffers[newURL] = imported
                         for channel in 0..<imported.channelCount {
-                            peaks[peakKey(url: newURL, channel: channel)] = imported.peaks[channel]
+                            peaks[Self.peakKey(url: newURL, channel: channel)] = imported.peaks[channel]
                         }
                         await MainActor.run {
                             self.remapClipSourceURL(from: oldURL, to: newURL)
@@ -1358,15 +1510,18 @@ final class SessionViewModel: ObservableObject {
                 }
             }
 
+            let finalBuffers = buffers
+            let finalPeaks = peaks
+            let hadMissing = !missing.isEmpty
             await MainActor.run {
-                self.audioBuffers = buffers
-                self.waveformPeaks = peaks
+                self.audioBuffers = finalBuffers
+                self.waveformPeaks = finalPeaks
                 self.syncMix()
                 self.isImporting = false
                 let stillMissing = Set(self.session.tracks.flatMap(\.clips).map(\.sourceURL))
-                    .filter { buffers[$0] == nil }
+                    .filter { finalBuffers[$0] == nil }
                 if stillMissing.isEmpty {
-                    if !missing.isEmpty {
+                    if hadMissing {
                         self.showStatus("Audio files linked")
                     }
                 } else {

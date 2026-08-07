@@ -75,11 +75,16 @@ struct AlignedTimelineHost<Header: View, Timeline: View>: NSViewRepresentable {
         context.coordinator.onOffsetChange = onOffsetChange
         layout(root: root, context: context)
 
-        if let headerHosting = context.coordinator.headerHosting {
-            headerHosting.rootView = header()
-        }
-        if let timelineHosting = context.coordinator.timelineHosting {
-            timelineHosting.rootView = timeline()
+        // Avoid animated transitions while the playhead drives ~30 updates/sec.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if let headerHosting = context.coordinator.headerHosting {
+                headerHosting.rootView = header()
+            }
+            if let timelineHosting = context.coordinator.timelineHosting {
+                timelineHosting.rootView = timeline()
+            }
         }
 
         resizeDocuments(context: context)

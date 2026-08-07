@@ -14,6 +14,9 @@ struct EditGeneratedClipRequest: Identifiable, Equatable {
     var frequencyHz: Double
     var thumpTenths: Int
     var trackLengthSeconds: Double
+    var timecodeFrameRate: TimecodeFrameRate
+    var timecodeStart: String
+    var lockToTimeline: Bool
 }
 
 struct IntroClicksRequest: Identifiable, Equatable {
@@ -29,5 +32,14 @@ struct ThumpTrackRequest: Identifiable, Equatable {
     var frequencyHz: Double = 55
     var thumpTenths: Int = 2
     var trackLengthSeconds: Double = 16
+    var track: GeneratedPlacementTrack = .newTrack
+}
+
+struct TimecodeTrackRequest: Identifiable, Equatable {
+    let id = UUID()
+    var frameRate: TimecodeFrameRate = .fps24
+    var startTimecode: String = "00:00:00:00"
+    var lengthSeconds: Double = 60
+    var lockToTimeline: Bool = true
     var track: GeneratedPlacementTrack = .newTrack
 }

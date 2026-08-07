@@ -31,7 +31,7 @@ cd ~/Documents/GitHub/SoundPlayback
 ./Scripts/package_app.sh
 ```
 
-Open `dist/SoundPlayback-1.0.2.dmg`, drag **SoundPlayback** into **Applications**, then launch from Launchpad or Spotlight.
+Open `dist/SoundPlayback-1.0.3.dmg`, drag **SoundPlayback** into **Applications**, then launch from Launchpad or Spotlight.
 
 If Gatekeeper blocks the first open (ad-hoc signed local build), right-click the app → **Open**.
 

@@ -4,12 +4,14 @@ struct ToolsBar: View {
     let detectedTempoBPM: Double?
     let onAddIntroClicks: () -> Void
     let onAddThumpTrack: () -> Void
+    let onGenerateTimecode: () -> Void
     let onTapTempo: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
             Button("Add Intro Clicks", action: onAddIntroClicks)
             Button("Add Thump Track", action: onAddThumpTrack)
+            Button("Generate Timecode", action: onGenerateTimecode)
 
             Divider().frame(height: 16)
 

@@ -1,7 +1,13 @@
 import Foundation
 
 enum TimeFormat {
+    /// SMPTE timeline / transport clock at the project frame rate.
+    static func timecode(_ t: TimeInterval, rate: TimecodeFrameRate) -> String {
+        SMPTETimecode.components(fromDisplaySeconds: t, rate: rate).formatted(rate: rate)
+    }
+
     /// Transport / ruler clock. Uses `H:MM:SS.ff` when ≥ 1 hour, otherwise `MM:SS.ff`.
+    /// Prefer `timecode(_:rate:)` for the timeline UI.
     static func clock(_ t: TimeInterval) -> String {
         let clamped = max(0, t)
         let totalCs = Int((clamped * 100).rounded(.down))

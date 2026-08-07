@@ -13,10 +13,16 @@ enum SPTheme {
     static let clipFillClicks = Color(red: 0.62, green: 0.42, blue: 0.16)
     /// Violet — thump / tone-pulse clips (double-click to edit tempo).
     static let clipFillThump = Color(red: 0.42, green: 0.30, blue: 0.58)
+    /// Steel blue — SMPTE LTC clips (double-click to edit timecode params).
+    static let clipFillTimecode = Color(red: 0.18, green: 0.40, blue: 0.52)
     static let trackLaneGenerated = Color(red: 0.17, green: 0.15, blue: 0.20)
     static let playhead = Color(red: 0.95, green: 0.55, blue: 0.25)
     static let marker = Color(red: 0.95, green: 0.78, blue: 0.30)
+    /// Coral highlight for favorited marks in the marks list.
+    static let markerFavorite = Color(red: 0.95, green: 0.42, blue: 0.28)
     static let headerWidth: CGFloat = 196
+    /// Marks directory docked left of the track headers.
+    static let marksPanelWidth: CGFloat = 168
     static let trackHeight: CGFloat = 72
     /// Tall enough for marker badges on top and tick labels along the bottom.
     static let rulerHeight: CGFloat = 40

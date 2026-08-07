@@ -21,8 +21,8 @@ struct TimelineWorkspaceView: View {
             .map(\.timelineEnd)
             .max() ?? 0
         let markerEnd = viewModel.session.markers.map(\.time).max() ?? 0
-        // At least 10 minutes of ruler so empty / short sessions still scroll usefully.
-        return max(600, clipEnd + 10, markerEnd + 10, engine.playheadTime + 10)
+        // Do not include playheadTime — that rebuilt the whole timeline ~30×/sec while playing.
+        return max(600, clipEnd + 10, markerEnd + 10)
     }
 
     private var timelineWidth: CGFloat {
@@ -40,23 +40,28 @@ struct TimelineWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                AlignedTimelineHost(
-                    headerWidth: SPTheme.headerWidth,
-                    timelineWidth: timelineWidth,
-                    contentHeight: contentHeight,
-                    scrollRequest: scrollRequest,
-                    onOffsetChange: { x, y in
-                        scrollOffsetX = x
-                        scrollOffsetY = y
-                        // Keep the page window in sync with actual scroll (user drag or jump settle).
-                        pageWindowOriginX = x
-                    },
-                    header: { headerDocument },
-                    timeline: { timelineDocument }
-                )
-                .onAppear { viewportWidth = max(1, geo.size.width - SPTheme.headerWidth) }
+                HStack(spacing: 0) {
+                    // Separate observer so playhead ticks don't rebuild/scroll-jank the marks list.
+                    MarksListSidebar(viewModel: viewModel)
+
+                    AlignedTimelineHost(
+                        headerWidth: SPTheme.headerWidth,
+                        timelineWidth: timelineWidth,
+                        contentHeight: contentHeight,
+                        scrollRequest: scrollRequest,
+                        onOffsetChange: { x, y in
+                            scrollOffsetX = x
+                            scrollOffsetY = y
+                            // Keep the page window in sync with actual scroll (user drag or jump settle).
+                            pageWindowOriginX = x
+                        },
+                        header: { headerDocument },
+                        timeline: { timelineDocument }
+                    )
+                }
+                .onAppear { updateViewportWidth(geo.size.width) }
                 .onChange(of: geo.size.width) { _, w in
-                    viewportWidth = max(1, w - SPTheme.headerWidth)
+                    updateViewportWidth(w)
                 }
             }
 
@@ -169,6 +174,7 @@ struct TimelineWorkspaceView: View {
                     pixelsPerSecond: viewModel.pixelsPerSecond,
                     contentWidth: timelineWidth,
                     timelineOrigin: viewModel.session.timelineOrigin,
+                    timelineFrameRate: viewModel.session.timelineFrameRate,
                     onSeek: { viewModel.setPlayStart(at: $0) },
                     onScrub: { engine.scrubPlayhead(to: $0) },
                     onMoveMarker: { id, time in viewModel.moveMarker(id: id, to: time) },
@@ -188,14 +194,20 @@ struct TimelineWorkspaceView: View {
                         contentWidth: timelineWidth,
                         playheadTime: engine.playheadTime,
                         timelineOrigin: viewModel.session.timelineOrigin,
+                        timelineFrameRate: viewModel.session.timelineFrameRate,
                         selectedClipIDs: viewModel.selectedClipIDs,
                         snapMoveStart: { clip, start in viewModel.snappedMoveStart(for: clip, proposedStart: start) },
                         snapTrimStart: { clip, start in viewModel.snappedTrimStart(for: clip, proposedStart: start) },
                         snapTrimEnd: { clip, end in viewModel.snappedTrimEnd(for: clip, proposedEnd: end) },
                         onSelectClip: { id, additive in viewModel.selectClip(id: id, additive: additive) },
                         onEditGeneratedClip: { viewModel.beginEditGeneratedClip(clipID: $0) },
-                        onSetClipStartTime: { id, raw, moveMarkers in
-                            viewModel.setClipStartTime(clipID: id, raw: raw, moveMarkers: moveMarkers)
+                        onSetClipStartTime: { id, raw, moveMarkers, moveAllTracks in
+                            viewModel.setClipStartTime(
+                                clipID: id,
+                                raw: raw,
+                                moveMarkers: moveMarkers,
+                                moveAllTracks: moveAllTracks
+                            )
                         },
                         onClipStartEditingChanged: { editing in viewModel.isEditingClipStart = editing },
                         onEmptyLaneClick: { time in
@@ -288,5 +300,9 @@ struct TimelineWorkspaceView: View {
         pageWindowOriginX = targetX
         scrollOffsetX = targetX
         scrollRequest = .to(CGPoint(x: targetX, y: scrollOffsetY))
+    }
+
+    private func updateViewportWidth(_ totalWidth: CGFloat) {
+        viewportWidth = max(1, totalWidth - SPTheme.marksPanelWidth - SPTheme.headerWidth)
     }
 }

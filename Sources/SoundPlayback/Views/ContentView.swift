@@ -13,6 +13,7 @@ struct ContentView: View {
                 detectedTempoBPM: viewModel.detectedTempoBPM,
                 onAddIntroClicks: { viewModel.showIntroClicksSheet = true },
                 onAddThumpTrack: { viewModel.showThumpTrackSheet = true },
+                onGenerateTimecode: { viewModel.showTimecodeSheet = true },
                 onTapTempo: { viewModel.showTapTempoSheet = true }
             )
             ShortcutsBar()
@@ -157,9 +158,23 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: $viewModel.showTimecodeSheet) {
+            TimecodeTrackSheet(
+                trackCount: viewModel.session.tracks.count,
+                projectFrameRate: viewModel.session.timelineFrameRate,
+                lockedDisplaySeconds: viewModel.placementDisplaySeconds,
+                onCancel: { viewModel.showTimecodeSheet = false },
+                onConfirm: { request in
+                    viewModel.showTimecodeSheet = false
+                    viewModel.addTimecodeTrack(request)
+                }
+            )
+        }
         .sheet(item: $viewModel.pendingGeneratedEdit) { edit in
             EditGeneratedClipSheet(
                 request: edit,
+                projectFrameRate: viewModel.session.timelineFrameRate,
+                lockedDisplaySeconds: viewModel.displaySecondsForClip(id: edit.id),
                 onCancel: { viewModel.pendingGeneratedEdit = nil },
                 onConfirm: { updated in
                     viewModel.applyGeneratedEdit(updated)

@@ -5,9 +5,13 @@ struct TransportBar: View {
     @ObservedObject var engine: PlaybackEngine
 
     @State private var isEditingTimelineStart = false
-    /// Typed HHMMSS digits (right-to-left entry). Centiseconds always display as .00.
+    /// Typed HHMMSSFF digits (right-to-left entry).
     @State private var timelineStartDigits = ""
     @FocusState private var timelineStartFocused: Bool
+
+    private var frameRate: TimecodeFrameRate {
+        viewModel.session.timelineFrameRate
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -34,6 +38,14 @@ struct TransportBar: View {
             Divider().frame(height: 18)
 
             timelineStartControl
+
+            Picker("FPS", selection: frameRateBinding) {
+                ForEach(TimecodeFrameRate.allCases) { rate in
+                    Text(rate.displayName).tag(rate)
+                }
+            }
+            .frame(maxWidth: 110)
+            .help("Project frame rate — timeline clocks and locked LTC use this")
 
             Divider().frame(height: 18)
 
@@ -86,18 +98,18 @@ struct TransportBar: View {
                 }
             }
 
-            Text(TimeFormat.clock(engine.playheadTime + viewModel.session.timelineOrigin))
+            Text(TimeFormat.timecode(engine.playheadTime + viewModel.session.timelineOrigin, rate: frameRate))
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(SPTheme.textSecondary)
-                .frame(minWidth: 88, alignment: .trailing)
-                .help("Playhead time (includes timeline start offset)")
+                .frame(minWidth: 108, alignment: .trailing)
+                .help("Playhead timecode (includes timeline start)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(SPTheme.panel)
     }
 
-    /// Double-click to edit. Digits enter right-to-left; `:` / `.` stay fixed; `.00` locked.
+    /// Double-click to edit. Digits enter right-to-left as HHMMSSFF.
     private var timelineStartControl: some View {
         HStack(spacing: 6) {
             Text("Timeline start")
@@ -105,7 +117,7 @@ struct TransportBar: View {
                 .foregroundStyle(SPTheme.textSecondary)
 
             if isEditingTimelineStart {
-                Text(TimeFormat.formatTimelineStart(fromDigits: timelineStartDigits))
+                Text(SMPTETimecode.format(fromDigits: timelineStartDigits, rate: frameRate))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(SPTheme.textPrimary)
                     .padding(.horizontal, 8)
@@ -128,15 +140,15 @@ struct TransportBar: View {
                     }
                     .onKeyPress(characters: .decimalDigits, phases: .down) { press in
                         guard let ch = press.characters.first else { return .ignored }
-                        timelineStartDigits = TimeFormat.appendTimelineDigit(timelineStartDigits, ch)
+                        timelineStartDigits = SMPTETimecode.appendDigit(timelineStartDigits, ch)
                         return .handled
                     }
                     .onKeyPress(.delete) {
-                        timelineStartDigits = TimeFormat.deleteTimelineDigit(timelineStartDigits)
+                        timelineStartDigits = SMPTETimecode.deleteDigit(timelineStartDigits)
                         return .handled
                     }
                     .onKeyPress(.deleteForward) {
-                        timelineStartDigits = TimeFormat.deleteTimelineDigit(timelineStartDigits)
+                        timelineStartDigits = SMPTETimecode.deleteDigit(timelineStartDigits)
                         return .handled
                     }
                     .onKeyPress(.return) {
@@ -155,7 +167,7 @@ struct TransportBar: View {
                     }
                     .help("Type digits (right → left). Enter applies. Esc cancels.")
             } else {
-                Text(TimeFormat.clockWithHours(viewModel.session.timelineOrigin))
+                Text(TimeFormat.timecode(viewModel.session.timelineOrigin, rate: frameRate))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(SPTheme.textPrimary)
                     .padding(.horizontal, 8)
@@ -167,7 +179,7 @@ struct TransportBar: View {
                         RoundedRectangle(cornerRadius: 5)
                             .stroke(SPTheme.border, lineWidth: 1)
                     )
-                    .help("Double-click to edit timeline start")
+                    .help("Double-click to edit timeline start (SMPTE)")
                     .onTapGesture(count: 2) {
                         beginTimelineStartEdit()
                     }
@@ -176,7 +188,6 @@ struct TransportBar: View {
     }
 
     private func beginTimelineStartEdit() {
-        // Start at zeros so digits fill right-to-left as typed (1 → 00:00:01.00).
         timelineStartDigits = ""
         isEditingTimelineStart = true
         viewModel.isEditingTimelineOrigin = true
@@ -191,12 +202,12 @@ struct TransportBar: View {
 
     private func commitTimelineStart() {
         guard isEditingTimelineStart else { return }
-        let value = TimeFormat.time(fromDigits: timelineStartDigits)
+        let tc = SMPTETimecode.components(fromDigits: timelineStartDigits, rate: frameRate)
         isEditingTimelineStart = false
         timelineStartFocused = false
         viewModel.isEditingTimelineOrigin = false
         timelineStartDigits = ""
-        viewModel.setTimelineOrigin(raw: TimeFormat.formatTimelineStart(fromDigits: TimeFormat.digits(fromTime: value)))
+        viewModel.setTimelineOrigin(raw: tc.formatted(rate: frameRate))
     }
 
     private var documentTitle: String {
@@ -207,6 +218,13 @@ struct TransportBar: View {
         Binding(
             get: { viewModel.selectedDeviceUID },
             set: { viewModel.selectDevice($0) }
+        )
+    }
+
+    private var frameRateBinding: Binding<TimecodeFrameRate> {
+        Binding(
+            get: { viewModel.session.timelineFrameRate },
+            set: { viewModel.setTimelineFrameRate($0) }
         )
     }
 }

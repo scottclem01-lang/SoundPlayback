@@ -78,7 +78,76 @@ enum GeneratedAudioService {
         )
     }
 
+    /// Linear Timecode (SMPTE 12M bi-phase mark) as a mono WAV.
+    /// Frame boundaries are sample-accurate so LTC stays locked to wall-clock / timeline time.
+    static func makeTimecode(
+        frameRate: TimecodeFrameRate,
+        start: SMPTEComponents,
+        lengthSeconds: Double,
+        sampleRate: Double
+    ) throws -> ImportedAudio {
+        let length = max(0.5, min(14_400, lengthSeconds))
+        let fps = frameRate.framesPerSecond
+        let ltcFrameCount = max(1, Int(ceil(length * fps - 1e-12)))
+        // Exact sample span for N frames (avoids cumulative float drift).
+        let frameCountAudio = max(1, Int((Double(ltcFrameCount) * sampleRate / fps).rounded(.up)))
+        let startAbsolute = SMPTETimecode.absoluteFrame(of: start, rate: frameRate)
+
+        var samples = [Float](repeating: 0, count: frameCountAudio)
+        var level: Float = 0.85
+
+        for frameIndex in 0..<ltcFrameCount {
+            let frameStart = Int((Double(frameIndex) * sampleRate / fps).rounded(.down))
+            let frameEnd = Int((Double(frameIndex + 1) * sampleRate / fps).rounded(.down))
+            let frameSamples = max(1, frameEnd - frameStart)
+
+            let tc = SMPTETimecode.components(
+                fromAbsolute: startAbsolute + frameIndex,
+                rate: frameRate
+            )
+            let bits = SMPTETimecode.ltcBits(for: tc, rate: frameRate)
+
+            for (bitIndex, bit) in bits.enumerated() {
+                let bitStart = frameStart + (bitIndex * frameSamples) / 80
+                let bitEnd = frameStart + ((bitIndex + 1) * frameSamples) / 80
+                let mid = bitStart + max(1, (bitEnd - bitStart) / 2)
+
+                // Transition at bit start.
+                level = -level
+                fillSamples(&samples, from: bitStart, to: mid, level: level)
+                if bit {
+                    level = -level
+                }
+                fillSamples(&samples, from: mid, to: bitEnd, level: level)
+            }
+        }
+
+        let rateTag = frameRate.rawValue.replacingOccurrences(of: " ", with: "")
+        let startTag = start.formatted(rate: frameRate)
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: ";", with: "-")
+        return try wrap(
+            samples: samples,
+            sampleRate: sampleRate,
+            basename: "ltc-\(rateTag)-\(startTag)"
+        )
+    }
+
     // MARK: - Synthesis
+
+    private static func fillSamples(
+        _ samples: inout [Float],
+        from start: Int,
+        to end: Int,
+        level: Float
+    ) {
+        let lo = max(0, start)
+        let hi = min(samples.count, end)
+        guard lo < hi else { return }
+        for i in lo..<hi {
+            samples[i] = level
+        }
+    }
 
     private static func renderClick(
         into samples: inout [Float],

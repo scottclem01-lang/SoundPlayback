@@ -153,3 +153,141 @@ struct ThumpTrackSheet: View {
         }
     }
 }
+
+struct TimecodeTrackSheet: View {
+    let trackCount: Int
+    /// Project timeline frame rate (locked LTC always uses this).
+    var projectFrameRate: TimecodeFrameRate = .fps24
+    /// Suggested start when lock-to-timeline is on (display seconds).
+    var lockedDisplaySeconds: TimeInterval = 0
+    let onCancel: () -> Void
+    let onConfirm: (TimecodeTrackRequest) -> Void
+
+    @State private var frameRate: TimecodeFrameRate = .fps24
+    @State private var startTimecode: String = "00:00:00:00"
+    @State private var lengthSeconds: Double = 60
+    @State private var lockToTimeline = true
+    @State private var selectedTrack: Int = -1
+    @State private var startError: String?
+
+    private var effectiveRate: TimecodeFrameRate {
+        lockToTimeline ? projectFrameRate : frameRate
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Generate Timecode")
+                .font(.headline)
+
+            Text("Creates SMPTE Linear Timecode (LTC) audio. Locked clips match the project timeline frame rate and clock.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Lock to timeline", isOn: $lockToTimeline)
+                .toggleStyle(.checkbox)
+                .help("LTC at the clip start matches the timeline clock. Uses the project FPS dropdown.")
+                .onChange(of: lockToTimeline) { _, locked in
+                    if locked {
+                        frameRate = projectFrameRate
+                        refreshLockedStart()
+                    }
+                }
+
+            if lockToTimeline {
+                HStack {
+                    Text("Frame rate")
+                    Spacer()
+                    Text(projectFrameRate.displayName)
+                        .foregroundStyle(SPTheme.textSecondary)
+                        .help("Change this with the FPS control on the transport bar")
+                }
+            } else {
+                Picker("Frame rate", selection: $frameRate) {
+                    ForEach(TimecodeFrameRate.allCases) { rate in
+                        Text(rate.displayName).tag(rate)
+                    }
+                }
+                .onChange(of: frameRate) { _, _ in
+                    if let tc = SMPTETimecode.parse(startTimecode, rate: frameRate) {
+                        startTimecode = tc.formatted(rate: frameRate)
+                    }
+                }
+            }
+
+            HStack {
+                Text("Start time")
+                Spacer()
+                TextField(
+                    effectiveRate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF",
+                    text: $startTimecode
+                )
+                .frame(width: 110)
+                .multilineTextAlignment(.trailing)
+                .disabled(lockToTimeline)
+                .foregroundStyle(lockToTimeline ? SPTheme.textSecondary : SPTheme.textPrimary)
+            }
+
+            if let startError {
+                Text(startError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Text("Length (seconds)")
+                Spacer()
+                TextField("", value: $lengthSeconds, format: .number.precision(.fractionLength(0...1)))
+                    .frame(width: 72)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            Picker("Track", selection: $selectedTrack) {
+                ForEach(0..<max(trackCount, 0), id: \.self) { index in
+                    Text("Track \(index + 1)").tag(index)
+                }
+                Text("New track").tag(-1)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("OK") {
+                    if lockToTimeline {
+                        refreshLockedStart()
+                    }
+                    let rate = effectiveRate
+                    guard SMPTETimecode.parse(startTimecode, rate: rate) != nil else {
+                        startError = "Enter start as \(rate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF")"
+                        return
+                    }
+                    startError = nil
+                    var request = TimecodeTrackRequest()
+                    request.frameRate = rate
+                    request.startTimecode = startTimecode
+                    request.lengthSeconds = lengthSeconds
+                    request.lockToTimeline = lockToTimeline
+                    request.track = selectedTrack < 0 ? .newTrack : .existing(selectedTrack)
+                    onConfirm(request)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            selectedTrack = -1
+            frameRate = projectFrameRate
+            refreshLockedStart()
+        }
+    }
+
+    private func refreshLockedStart() {
+        let tc = SMPTETimecode.components(
+            fromDisplaySeconds: lockedDisplaySeconds,
+            rate: projectFrameRate
+        )
+        startTimecode = tc.formatted(rate: projectFrameRate)
+    }
+}

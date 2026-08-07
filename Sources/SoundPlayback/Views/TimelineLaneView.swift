@@ -10,13 +10,14 @@ struct TimelineLaneView: View {
     let contentWidth: CGFloat
     let playheadTime: TimeInterval
     let timelineOrigin: TimeInterval
+    let timelineFrameRate: TimecodeFrameRate
     let selectedClipIDs: Set<UUID>
     let snapMoveStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimEnd: (AudioClip, TimeInterval) -> TimeInterval
     let onSelectClip: (_ id: UUID, _ additive: Bool) -> Void
     let onEditGeneratedClip: (UUID) -> Void
-    let onSetClipStartTime: (_ id: UUID, _ raw: String, _ moveMarkers: Bool) -> Void
+    let onSetClipStartTime: (_ id: UUID, _ raw: String, _ moveMarkers: Bool, _ moveAllTracks: Bool) -> Void
     let onClipStartEditingChanged: (Bool) -> Void
     let onEmptyLaneClick: (TimeInterval) -> Void
     let onGhostChange: (ClipDragGhost?) -> Void
@@ -49,12 +50,15 @@ struct TimelineLaneView: View {
                     isSelected: selectedClipIDs.contains(clip.id),
                     selectionCount: selectedClipIDs.count,
                     timelineOrigin: timelineOrigin,
+                    timelineFrameRate: timelineFrameRate,
                     snapMoveStart: snapMoveStart,
                     snapTrimStart: snapTrimStart,
                     snapTrimEnd: snapTrimEnd,
                     onSelect: { additive in onSelectClip(clip.id, additive) },
                     onEditGenerated: { onEditGeneratedClip(clip.id) },
-                    onSetStartTime: { raw, moveMarkers in onSetClipStartTime(clip.id, raw, moveMarkers) },
+                    onSetStartTime: { raw, moveMarkers, moveAllTracks in
+                        onSetClipStartTime(clip.id, raw, moveMarkers, moveAllTracks)
+                    },
                     onStartEditingChanged: onClipStartEditingChanged,
                     onGhostChange: onGhostChange,
                     onBeginEdit: onBeginEdit,
@@ -99,12 +103,13 @@ struct InteractiveClipView: View {
     let isSelected: Bool
     let selectionCount: Int
     let timelineOrigin: TimeInterval
+    let timelineFrameRate: TimecodeFrameRate
     let snapMoveStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimStart: (AudioClip, TimeInterval) -> TimeInterval
     let snapTrimEnd: (AudioClip, TimeInterval) -> TimeInterval
     let onSelect: (_ additive: Bool) -> Void
     let onEditGenerated: () -> Void
-    let onSetStartTime: (String, Bool) -> Void  // raw time, moveMarkers
+    let onSetStartTime: (String, Bool, Bool) -> Void  // raw time, moveMarkers, moveAllTracks
     let onStartEditingChanged: (Bool) -> Void
     let onGhostChange: (ClipDragGhost?) -> Void
     let onBeginEdit: () -> Void
@@ -125,6 +130,7 @@ struct InteractiveClipView: View {
     @State private var isEditingStart = false
     @State private var draftStart = ""
     @State private var moveMarkersWithClip = true
+    @State private var moveAllTracksWithClip = false
     @FocusState private var startFieldFocused: Bool
 
     private let edgeHit: CGFloat = 10
@@ -170,7 +176,7 @@ struct InteractiveClipView: View {
         .onChange(of: isEditingStart) { _, editing in
             onStartEditingChanged(editing)
             if editing {
-                draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
+                draftStart = TimeFormat.timecode(clip.timelineStart + timelineOrigin, rate: timelineFrameRate)
                 DispatchQueue.main.async {
                     startFieldFocused = true
                 }
@@ -263,21 +269,20 @@ struct InteractiveClipView: View {
                     onEndEdit()
                 }
         )
-        .help(
-            clip.isGenerated
-                ? "Double-click to change tempo"
-                : "Double-click to set start time"
-        )
+        .help(generatedClipHelp)
     }
 
     private var clipStartPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Clip start")
                 .font(.headline)
-            Text("Display time on the timeline")
+            Text("Display SMPTE on the timeline")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextField("0:00:00.00", text: $draftStart)
+            TextField(
+                timelineFrameRate.isDropFrame ? "HH:MM:SS;FF" : "HH:MM:SS:FF",
+                text: $draftStart
+            )
                 .font(.system(.title3, design: .monospaced))
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 140)
@@ -286,7 +291,14 @@ struct InteractiveClipView: View {
                 .onExitCommand { cancelStartEdit() }
             Toggle("Move markers with this clip", isOn: $moveMarkersWithClip)
                 .toggleStyle(.checkbox)
-                .help("When on, markers that sit on this clip move by the same amount.")
+                .help(
+                    moveAllTracksWithClip
+                        ? "When on, every marker moves by the same amount."
+                        : "When on, markers that sit on this clip move by the same amount."
+                )
+            Toggle("Move all tracks with this clip", isOn: $moveAllTracksWithClip)
+                .toggleStyle(.checkbox)
+                .help("When on, every clip on every track shifts by the same amount.")
             HStack {
                 Button("Cancel", role: .cancel) { cancelStartEdit() }
                 Spacer()
@@ -295,12 +307,13 @@ struct InteractiveClipView: View {
             }
         }
         .padding(14)
-        .frame(minWidth: 220)
+        .frame(minWidth: 260)
     }
 
     private func beginStartEdit() {
-        draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
+        draftStart = TimeFormat.timecode(clip.timelineStart + timelineOrigin, rate: timelineFrameRate)
         moveMarkersWithClip = true
+        moveAllTracksWithClip = false
         isEditingStart = true
     }
 
@@ -308,17 +321,18 @@ struct InteractiveClipView: View {
         guard isEditingStart else { return }
         let raw = draftStart.trimmingCharacters(in: .whitespacesAndNewlines)
         let moveMarkers = moveMarkersWithClip
+        let moveAllTracks = moveAllTracksWithClip
         isEditingStart = false
         startFieldFocused = false
         guard !raw.isEmpty else { return }
-        onSetStartTime(raw, moveMarkers)
+        onSetStartTime(raw, moveMarkers, moveAllTracks)
     }
 
     private func cancelStartEdit() {
         guard isEditingStart else { return }
         isEditingStart = false
         startFieldFocused = false
-        draftStart = TimeFormat.clock(clip.timelineStart + timelineOrigin)
+        draftStart = TimeFormat.timecode(clip.timelineStart + timelineOrigin, rate: timelineFrameRate)
     }
 
     private func noteTrimLock(proposed: TimeInterval, clamped: TimeInterval) {
@@ -365,17 +379,23 @@ struct InteractiveClipView: View {
                     lineWidth: isSelected ? 2 : (hoveringTrim ? 1.5 : 1)
                 )
         )
-        .help(
-            clip.isGenerated
-                ? "Double-click to change tempo"
-                : "Double-click to set start time"
-        )
+        .help(generatedClipHelp)
+    }
+
+    private var generatedClipHelp: String {
+        if clip.isGenerated {
+            return clip.generation?.kind == .timecode
+                ? "Double-click to edit timecode"
+                : "Double-click to change tempo"
+        }
+        return "Double-click to set start time"
     }
 
     private var clipFillColor: Color {
         switch clip.generation?.kind {
         case .introClicks: return SPTheme.clipFillClicks
         case .thump: return SPTheme.clipFillThump
+        case .timecode: return SPTheme.clipFillTimecode
         case .none: return SPTheme.clipFill
         }
     }
@@ -399,11 +419,18 @@ struct InteractiveClipView: View {
 
     private var clipLabel: String {
         if let generation = clip.generation {
-            let bpm = generation.tempoBPM
-            let bpmText = abs(bpm - bpm.rounded()) < 0.05
-                ? "\(Int(bpm.rounded()))"
-                : String(format: "%.1f", bpm)
-            return "\(generation.displayName) · \(bpmText) BPM"
+            switch generation.kind {
+            case .timecode:
+                let rate = generation.resolvedFrameRate
+                let start = generation.resolvedStartComponents.formatted(rate: rate)
+                return "LTC · \(rate.displayName) · \(start)"
+            case .introClicks, .thump:
+                let bpm = generation.tempoBPM
+                let bpmText = abs(bpm - bpm.rounded()) < 0.05
+                    ? "\(Int(bpm.rounded()))"
+                    : String(format: "%.1f", bpm)
+                return "\(generation.displayName) · \(bpmText) BPM"
+            }
         }
         let name = clip.sourceURL.deletingPathExtension().lastPathComponent
         let side: String

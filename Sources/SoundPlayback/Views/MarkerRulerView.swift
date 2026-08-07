@@ -9,6 +9,7 @@ struct MarkerRulerView: View {
     let contentWidth: CGFloat
     /// Added to ruler labels so the left edge can read as something other than 0:00.
     let timelineOrigin: TimeInterval
+    let timelineFrameRate: TimecodeFrameRate
     let onSeek: (TimeInterval) -> Void
     let onScrub: (TimeInterval) -> Void
     let onMoveMarker: (UUID, TimeInterval) -> Void
@@ -16,44 +17,16 @@ struct MarkerRulerView: View {
     let onSetMarkerNote: (UUID, String) -> Void
     let onNoteEditingChanged: (Bool) -> Void
 
-    private var majorStep: TimeInterval {
-        TimeFormat.majorTickStep(pixelsPerSecond: pixelsPerSecond)
-    }
-
-    private var majorTimes: [TimeInterval] {
-        let step = majorStep
-        guard step > 0, contentWidth > 0 else { return [0] }
-        let end = Double(contentWidth) / pixelsPerSecond
-        var times: [TimeInterval] = []
-        var t: TimeInterval = 0
-        var i = 0
-        while t <= end + 1e-9 {
-            times.append(t)
-            i += 1
-            t = Double(i) * step
-            if i > 50_000 { break }
-        }
-        return times
-    }
-
     var body: some View {
         ZStack(alignment: .topLeading) {
-            SPTheme.panel
-
-            // Every-second ticks span the full gray bar; labels stay at the bottom.
-            RulerTicksShape(pixelsPerSecond: pixelsPerSecond)
-                .stroke(Color.white.opacity(0.32), lineWidth: 1)
-                .allowsHitTesting(false)
-
-            ForEach(Array(majorTimes.enumerated()), id: \.offset) { _, t in
-                let x = CGFloat(t * pixelsPerSecond)
-                Text(TimeFormat.clock(t + timelineOrigin))
-                    .font(.system(size: 8, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.55))
-                    // Keep numbers at the bottom (unchanged vertically).
-                    .offset(x: x + 3, y: SPTheme.rulerHeight - 14)
-                    .allowsHitTesting(false)
-            }
+            // Ticks/labels skip rebuild when only the playhead moves.
+            RulerScaleLayer(
+                timelineOrigin: timelineOrigin,
+                timelineFrameRate: timelineFrameRate,
+                pixelsPerSecond: pixelsPerSecond,
+                contentWidth: contentWidth
+            )
+            .equatable()
 
             playheadLine(time: playStartTime, color: SPTheme.playhead.opacity(0.55))
             playheadLine(time: playheadTime, color: SPTheme.playhead)
@@ -104,22 +77,64 @@ struct MarkerRulerView: View {
     }
 }
 
-/// One tick per second, full height of the gray ruler bar.
+/// SMPTE ticks + labels. Equatable so playhead-only updates don't rebuild the scale.
+private struct RulerScaleLayer: View, Equatable {
+    let timelineOrigin: TimeInterval
+    let timelineFrameRate: TimecodeFrameRate
+    let pixelsPerSecond: Double
+    let contentWidth: CGFloat
+
+    private var contentEnd: TimeInterval {
+        guard pixelsPerSecond > 0 else { return 0 }
+        return Double(contentWidth) / pixelsPerSecond
+    }
+
+    var body: some View {
+        let majorTimes = SMPTETimecode.majorTickInternalTimes(
+            origin: timelineOrigin,
+            contentEnd: contentEnd,
+            rate: timelineFrameRate,
+            pixelsPerSecond: pixelsPerSecond
+        )
+        let minorTimes = SMPTETimecode.minorTickInternalTimes(
+            origin: timelineOrigin,
+            contentEnd: contentEnd,
+            rate: timelineFrameRate,
+            pixelsPerSecond: pixelsPerSecond
+        )
+
+        ZStack(alignment: .topLeading) {
+            SPTheme.panel
+
+            RulerTicksShape(times: minorTimes, pixelsPerSecond: pixelsPerSecond)
+                .stroke(Color.white.opacity(0.32), lineWidth: 1)
+                .allowsHitTesting(false)
+
+            ForEach(Array(majorTimes.enumerated()), id: \.offset) { _, t in
+                let x = CGFloat(t * pixelsPerSecond)
+                Text(TimeFormat.timecode(t + timelineOrigin, rate: timelineFrameRate))
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .offset(x: x + 3, y: SPTheme.rulerHeight - 14)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+/// Vertical ticks at SMPTE-aligned internal timeline times.
 private struct RulerTicksShape: Shape {
+    var times: [TimeInterval]
     var pixelsPerSecond: Double
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        var index = 0
-        while true {
-            let t = Double(index) // every 1.0s
+        for t in times {
             let x = t * pixelsPerSecond
             if x > rect.width + 0.5 { break }
-            // Top of gray bar → bottom (numbers sit near the bottom, unchanged).
+            if x < -0.5 { continue }
             path.move(to: CGPoint(x: x, y: 0))
             path.addLine(to: CGPoint(x: x, y: rect.height))
-            index += 1
-            if index > 100_000 { break }
         }
         return path
     }

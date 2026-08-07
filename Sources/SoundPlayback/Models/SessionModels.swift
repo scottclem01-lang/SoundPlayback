@@ -14,9 +14,11 @@ struct PlaybackSession: Codable, Equatable {
     /// Display origin for the ruler / clocks. Internal positions stay 0-based;
     /// shown time = internal + timelineOrigin (e.g. origin 1:00:00 → left edge reads 1:00:00).
     var timelineOrigin: TimeInterval
+    /// Project frame rate — timeline clocks and locked LTC use this.
+    var timelineFrameRate: TimecodeFrameRate
 
     enum CodingKeys: String, CodingKey {
-        case version, name, sampleRate, tracks, markers, outputDeviceUID, playStartTime, timelineOrigin
+        case version, name, sampleRate, tracks, markers, outputDeviceUID, playStartTime, timelineOrigin, timelineFrameRate
     }
 
     init(
@@ -27,7 +29,8 @@ struct PlaybackSession: Codable, Equatable {
         markers: [TimelineMarker],
         outputDeviceUID: String?,
         playStartTime: TimeInterval,
-        timelineOrigin: TimeInterval = 0
+        timelineOrigin: TimeInterval = 0,
+        timelineFrameRate: TimecodeFrameRate = .fps24
     ) {
         self.version = version
         self.name = name
@@ -37,6 +40,7 @@ struct PlaybackSession: Codable, Equatable {
         self.outputDeviceUID = outputDeviceUID
         self.playStartTime = playStartTime
         self.timelineOrigin = timelineOrigin
+        self.timelineFrameRate = timelineFrameRate
     }
 
     init(from decoder: Decoder) throws {
@@ -49,6 +53,12 @@ struct PlaybackSession: Codable, Equatable {
         outputDeviceUID = try c.decodeIfPresent(String.self, forKey: .outputDeviceUID)
         playStartTime = try c.decodeIfPresent(TimeInterval.self, forKey: .playStartTime) ?? 0
         timelineOrigin = try c.decodeIfPresent(TimeInterval.self, forKey: .timelineOrigin) ?? 0
+        if let raw = try c.decodeIfPresent(String.self, forKey: .timelineFrameRate),
+           let rate = TimecodeFrameRate(rawValue: raw) {
+            timelineFrameRate = rate
+        } else {
+            timelineFrameRate = .fps24
+        }
     }
 
     static func blank(trackCount: Int = 4) -> PlaybackSession {
@@ -59,7 +69,8 @@ struct PlaybackSession: Codable, Equatable {
             markers: [],
             outputDeviceUID: nil,
             playStartTime: 0,
-            timelineOrigin: 0
+            timelineOrigin: 0,
+            timelineFrameRate: .fps24
         )
     }
 }
@@ -120,6 +131,7 @@ struct OutputMask: OptionSet, Codable, Equatable, Hashable {
 enum GeneratedClipKind: String, Codable, Equatable {
     case introClicks
     case thump
+    case timecode
 }
 
 struct ClipGeneration: Codable, Equatable {
@@ -129,6 +141,14 @@ struct ClipGeneration: Codable, Equatable {
     var frequencyHz: Double?
     var thumpTenths: Int?
     var trackLengthSeconds: Double?
+    /// SMPTE LTC rate raw value (`TimecodeFrameRate.rawValue`).
+    var timecodeFrameRate: String?
+    var timecodeStartHours: Int?
+    var timecodeStartMinutes: Int?
+    var timecodeStartSeconds: Int?
+    var timecodeStartFrames: Int?
+    /// When true, LTC at the clip’s left edge matches the timeline clock.
+    var lockToTimeline: Bool?
 
     static func introClicks(tempoBPM: Double, clickCount: Int) -> ClipGeneration {
         ClipGeneration(
@@ -137,7 +157,13 @@ struct ClipGeneration: Codable, Equatable {
             clickCount: clickCount,
             frequencyHz: nil,
             thumpTenths: nil,
-            trackLengthSeconds: nil
+            trackLengthSeconds: nil,
+            timecodeFrameRate: nil,
+            timecodeStartHours: nil,
+            timecodeStartMinutes: nil,
+            timecodeStartSeconds: nil,
+            timecodeStartFrames: nil,
+            lockToTimeline: nil
         )
     }
 
@@ -153,7 +179,49 @@ struct ClipGeneration: Codable, Equatable {
             clickCount: nil,
             frequencyHz: frequencyHz,
             thumpTenths: thumpTenths,
-            trackLengthSeconds: trackLengthSeconds
+            trackLengthSeconds: trackLengthSeconds,
+            timecodeFrameRate: nil,
+            timecodeStartHours: nil,
+            timecodeStartMinutes: nil,
+            timecodeStartSeconds: nil,
+            timecodeStartFrames: nil,
+            lockToTimeline: nil
+        )
+    }
+
+    static func timecode(
+        frameRate: TimecodeFrameRate,
+        start: SMPTEComponents,
+        trackLengthSeconds: Double,
+        lockToTimeline: Bool
+    ) -> ClipGeneration {
+        let c = start.clamped(to: frameRate)
+        return ClipGeneration(
+            kind: .timecode,
+            tempoBPM: 0,
+            clickCount: nil,
+            frequencyHz: nil,
+            thumpTenths: nil,
+            trackLengthSeconds: trackLengthSeconds,
+            timecodeFrameRate: frameRate.rawValue,
+            timecodeStartHours: c.hours,
+            timecodeStartMinutes: c.minutes,
+            timecodeStartSeconds: c.seconds,
+            timecodeStartFrames: c.frames,
+            lockToTimeline: lockToTimeline
+        )
+    }
+
+    var resolvedFrameRate: TimecodeFrameRate {
+        TimecodeFrameRate(rawValue: timecodeFrameRate ?? "") ?? .fps24
+    }
+
+    var resolvedStartComponents: SMPTEComponents {
+        SMPTEComponents(
+            hours: timecodeStartHours ?? 0,
+            minutes: timecodeStartMinutes ?? 0,
+            seconds: timecodeStartSeconds ?? 0,
+            frames: timecodeStartFrames ?? 0
         )
     }
 
@@ -161,6 +229,7 @@ struct ClipGeneration: Codable, Equatable {
         switch kind {
         case .introClicks: return "Intro Clicks"
         case .thump: return "Thump"
+        case .timecode: return "Timecode"
         }
     }
 }
@@ -224,16 +293,19 @@ struct TimelineMarker: Identifiable, Codable, Equatable, Comparable {
     var time: TimeInterval
     /// Optional label shown next to the mark (intro, chorus 1, …).
     var note: String
+    /// Favorited marks highlight in the marks list.
+    var isFavorite: Bool
 
-    init(id: UUID = UUID(), number: Int, time: TimeInterval, note: String = "") {
+    init(id: UUID = UUID(), number: Int, time: TimeInterval, note: String = "", isFavorite: Bool = false) {
         self.id = id
         self.number = number
         self.time = time
         self.note = note
+        self.isFavorite = isFavorite
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, number, time, note
+        case id, number, time, note, isFavorite
     }
 
     init(from decoder: Decoder) throws {
@@ -242,6 +314,7 @@ struct TimelineMarker: Identifiable, Codable, Equatable, Comparable {
         number = try c.decode(Int.self, forKey: .number)
         time = try c.decode(TimeInterval.self, forKey: .time)
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
     }
 
     static func < (lhs: TimelineMarker, rhs: TimelineMarker) -> Bool {
